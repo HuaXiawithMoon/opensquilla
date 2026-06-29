@@ -180,16 +180,11 @@ async function main() {
         turn.end(id);
       });
     },
-    // Live theme switch (sent by the /theme slash command). Repaint every owned
-    // surface and re-render the footer; new content picks up THEME automatically.
-    themeSet: (m) => {
-      applyTheme(m.name);
-      renderer.setBackgroundColor?.(THEME.appBg);
-      conversationBox.backgroundColor = THEME.appBg;
-      inputBox.backgroundColor = THEME.footerBg;
-      composer.rerender();
-      renderer.requestRender?.();
-    },
+    // Theme control from the /theme slash command: set a named theme directly, or
+    // open the interactive picker (arrow-key live preview). Both repaint every
+    // owned surface; new content picks up THEME automatically.
+    themeSet: (m) => composer.applyHostTheme(m.name),
+    themePick: () => composer.openThemePicker(),
     // scrollback is a lifecycle-less raw line dump (no begin/end); rendered inline
     // here rather than as a block — the only orchestration-layer rendering exception.
     scrollback: (m) => {

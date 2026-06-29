@@ -33,12 +33,17 @@ def test_theme_names_match_js_registry() -> None:
 
 
 @pytest.mark.asyncio
-async def test_theme_command_lists_available_themes() -> None:
-    with console.capture() as capture:
-        await handle_theme_command("/theme", None)
-    out = capture.get()
-    for name in THEME_NAMES:
-        assert name in out
+async def test_theme_command_opens_picker_with_no_argument() -> None:
+    class _FakeOutput:
+        def __init__(self) -> None:
+            self.sent: list[tuple[str, dict[str, object]]] = []
+
+        async def send_message(self, message_type: str, payload: dict[str, object]) -> None:
+            self.sent.append((message_type, payload))
+
+    output = _FakeOutput()
+    await handle_theme_command("/theme", output)
+    assert output.sent == [("theme.pick", {})]
 
 
 @pytest.mark.asyncio
@@ -57,7 +62,7 @@ async def test_theme_command_switches_via_send_message() -> None:
 
 
 @pytest.mark.asyncio
-async def test_theme_command_rejects_unknown_theme() -> None:
+async def test_theme_command_unknown_name_opens_picker() -> None:
     class _FakeOutput:
         def __init__(self) -> None:
             self.sent: list[tuple[str, dict[str, object]]] = []
@@ -66,10 +71,8 @@ async def test_theme_command_rejects_unknown_theme() -> None:
             self.sent.append((message_type, payload))
 
     output = _FakeOutput()
-    with console.capture() as capture:
-        await handle_theme_command("/theme nope", output)
-    assert output.sent == []
-    assert "Unknown theme" in capture.get()
+    await handle_theme_command("/theme nope", output)
+    assert output.sent == [("theme.pick", {})]
 
 
 @pytest.mark.asyncio

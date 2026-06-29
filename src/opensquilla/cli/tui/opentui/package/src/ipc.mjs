@@ -31,6 +31,7 @@ export function createDispatcher(h) {
       case "model.text": return h.modelText?.(m);
       case "scrollback.write": return h.scrollback?.(m);
       case "theme.set": return h.themeSet?.(m);
+      case "theme.pick": return h.themePick?.(m);
       case "shutdown": return h.shutdown(m);
       default: return h.unknown(m);
     }

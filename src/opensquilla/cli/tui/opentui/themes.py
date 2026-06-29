@@ -26,35 +26,30 @@ THEME_ENV_VAR = "OPENSQUILLA_TUI_THEME"
 
 
 async def handle_theme_command(cmd: str, tui_output: object | None) -> None:
-    """Handle ``/theme`` (list) and ``/theme <name>`` (live switch).
+    """Handle ``/theme`` and ``/theme <name>`` (OpenTUI only).
 
-    Switching is OpenTUI-only: it sends ``theme.set`` through the host output
-    handle. On the native backend (no ``send_message``) it explains that themes
-    apply to the OpenTUI backend.
+    ``/theme <name>`` switches directly; bare ``/theme`` (or an unknown name)
+    opens the interactive picker in the host (arrow-key live preview). Both are
+    driven over the host output handle, so the host renders a panel rather than
+    dumping a list into the scrollback. On the native backend (no
+    ``send_message``) it explains that themes apply to the OpenTUI backend.
     """
-    from opensquilla.cli.ui import console  # noqa: PLC0415 - keep module import-light
-
-    names = ", ".join(THEME_NAMES)
-    parts = cmd.split()
-    if len(parts) == 1:
-        console.print(f"[dim]Themes:[/dim] {names}")
-        console.print(
-            "[dim]Switch with[/dim] /theme <name>  [dim](OpenTUI backend only).[/dim]"
-        )
-        return
-
-    name = parts[1].strip().lower()
-    if name not in THEME_NAMES:
-        console.print(f"[yellow]Unknown theme '{name}'.[/yellow] [dim]Available:[/dim] {names}")
-        return
-
     send_message = getattr(tui_output, "send_message", None)
     if not callable(send_message):
+        from opensquilla.cli.ui import console  # noqa: PLC0415 - keep module import-light
+
         console.print(
             "[yellow]Themes apply to the OpenTUI backend "
             "(set OPENSQUILLA_TUI_BACKEND=opentui).[/yellow]"
         )
         return
 
-    await send_message("theme.set", {"name": name})
-    console.print(f"[green]Theme:[/green] {name}")
+    parts = cmd.split()
+    if len(parts) >= 2:
+        name = parts[1].strip().lower()
+        if name in THEME_NAMES:
+            await send_message("theme.set", {"name": name})
+            return
+
+    # No name, or an unknown one: open the interactive picker in the host.
+    await send_message("theme.pick", {})

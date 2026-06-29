@@ -1,4 +1,4 @@
-import { THEME, STATUS_PULSE_FRAMES } from "./theme.mjs";
+import { THEME, THEME_NAMES, STATUS_PULSE_FRAMES, applyTheme, activeThemeName } from "./theme.mjs";
 import { cellWidth, clipToCells, textWidth } from "./primitives.mjs";
 
 const COMPLETION_MENU_LEFT = 1;
@@ -9,6 +9,20 @@ const COMPOSER_LEFT = 1;
 const COMPOSER_RIGHT = 34;
 const COMPOSER_CONTENT_LEFT = COMPOSER_LEFT + 2; // border plus left padding
 const COMPOSER_CONTENT_TOP_OFFSET = 1; // top border
+
+// Pure key handling for the theme picker overlay (modeled on menuKeyAction):
+// up/down preview the highlighted theme live, enter keeps it, escape reverts.
+export function themePickerKeyAction(picker, keyName) {
+  if (!picker?.active) return { handled: false, action: "pass", selected: 0 };
+  const max = Math.max(0, (picker.names?.length ?? 0) - 1);
+  const sel = clamp(Number(picker.selected) || 0, 0, max);
+  if (keyName === "up") return { handled: true, action: "preview", selected: clamp(sel - 1, 0, max) };
+  if (keyName === "down") return { handled: true, action: "preview", selected: clamp(sel + 1, 0, max) };
+  if (keyName === "return" || keyName === "tab") return { handled: true, action: "confirm", selected: sel };
+  if (keyName === "escape") return { handled: true, action: "cancel", selected: sel };
+  // Modal: swallow every other key so it never leaks into the input while open.
+  return { handled: true, action: "none", selected: sel };
+}
 
 // Last path segment of a model id ("vendor/big-model" -> "big-model").
 export function shortModel(m) {
@@ -413,6 +427,7 @@ export function createComposer(deps) {
   // shrinking menu never leaves a stale node behind and re-renders don't stack.
   function clearOverlay() {
     overlayLayer?.remove?.("completion-menu");
+    overlayLayer?.remove?.("theme-picker");
     // Hide the layer again so it stops intercepting wheel events — otherwise a
     // permanently-visible full-screen overlay blocks conversation scrolling.
     if (overlayLayer) overlayLayer.visible = false;
@@ -458,6 +473,95 @@ export function createComposer(deps) {
     // Reveal the layer only now that it carries a menu, so it intercepts mouse
     // events solely while the menu is open (clearOverlay hides it again).
     overlayLayer.visible = true;
+  }
+
+  // ---- Theme picker overlay -------------------------------------------------
+  // A modal theme list mounted on the overlay layer (like the completion menu).
+  // Arrow keys preview each theme live; Enter keeps it; Esc reverts to the theme
+  // that was active when the picker opened. Rendering here (not console output)
+  // is why it looks like a panel instead of stray scrollback text.
+  const THEME_PICKER_WIDTH = 34;
+  const THEME_PICKER_INNER = THEME_PICKER_WIDTH - COMPLETION_MENU_CHROME_CELLS;
+  let themePicker = null;
+
+  function applyHostTheme(name) {
+    applyTheme(name);
+    renderer.setBackgroundColor?.(THEME.appBg);
+    if (conversationBox) conversationBox.backgroundColor = THEME.appBg;
+    if (inputBox) inputBox.backgroundColor = THEME.footerBg;
+    rerenderInputRegion(); // repaints the footer (and clears the overlay)…
+    renderThemePicker(); // …so remount the picker (no-op when closed) in new colors
+    renderer.requestRender?.();
+  }
+
+  function renderThemePicker() {
+    if (!themePicker?.active) return;
+    overlayLayer?.remove?.("theme-picker");
+    const names = themePicker.names;
+    const maxRows = Math.max(1, (renderer.terminalHeight ?? 24) - footerHeight - 1);
+    const node = new BoxRenderable(renderer, {
+      id: "theme-picker",
+      position: "absolute",
+      left: COMPLETION_MENU_LEFT,
+      width: THEME_PICKER_WIDTH,
+      bottom: footerHeight,
+      height: Math.min(names.length + 3, maxRows),
+      borderStyle: "rounded",
+      borderColor: THEME.brandAccent,
+      backgroundColor: THEME.overlayBg,
+      title: " theme ",
+      titleAlignment: "left",
+      flexDirection: "column",
+      paddingLeft: 1,
+      paddingRight: 1,
+    });
+    names.forEach((name, index) => {
+      const active = index === themePicker.selected;
+      node.add(new TextRenderable(renderer, {
+        id: `theme-picker-row-${index}`,
+        content: clipToCells(`${active ? "› " : "  "}${name}`, THEME_PICKER_INNER),
+        fg: active ? THEME.brandAccentSoft : THEME.muted,
+      }));
+    });
+    node.add(new TextRenderable(renderer, {
+      id: "theme-picker-hint",
+      content: clipToCells("↑↓ preview · enter keep · esc", THEME_PICKER_INNER),
+      fg: THEME.detailText,
+    }));
+    overlayLayer.add(node);
+    overlayLayer.visible = true;
+  }
+
+  function openThemePicker() {
+    resetMenu(); // close the completion menu if it was open
+    const names = THEME_NAMES;
+    let selected = names.indexOf(activeThemeName());
+    if (selected < 0) selected = 0;
+    themePicker = { active: true, names, selected, original: activeThemeName() };
+    renderThemePicker();
+    renderer.requestRender?.();
+  }
+
+  function closeThemePicker() {
+    themePicker = null;
+    clearOverlay();
+  }
+
+  function handleThemePickerKey(keyName) {
+    const result = themePickerKeyAction(themePicker, keyName);
+    if (!result.handled) return false;
+    if (result.action === "preview") {
+      themePicker.selected = result.selected;
+      applyHostTheme(themePicker.names[result.selected]);
+    } else if (result.action === "confirm") {
+      closeThemePicker();
+      renderer.requestRender?.();
+    } else if (result.action === "cancel") {
+      const original = themePicker.original;
+      closeThemePicker();
+      applyHostTheme(original); // revert the live preview
+    }
+    return true;
   }
 
   // Split the input into display lines and splice the caret into the line/column
@@ -700,6 +804,11 @@ export function createComposer(deps) {
 
   function installKeyboardHandlers() {
     renderer.keyInput.on("keypress", (key) => {
+      // The theme picker is modal: it consumes every key while open.
+      if (themePicker?.active) {
+        handleThemePickerKey(key.name);
+        return;
+      }
       if (menu.active) {
         const menuResult = menuKeyAction(menu, key.name);
         if (applyMenuKeyResult(menuResult)) return;
@@ -914,5 +1023,7 @@ export function createComposer(deps) {
     applyCompletionResponse,
     onResize,
     tickPulse,
+    openThemePicker,
+    applyHostTheme,
   };
 }
