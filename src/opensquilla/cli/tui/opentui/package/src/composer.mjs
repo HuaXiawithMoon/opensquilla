@@ -178,6 +178,43 @@ export function shouldDropResponse(responseReqId, currentSeq) {
   return Number(responseReqId) !== Number(currentSeq);
 }
 
+// Index of the start of the line the caret is on (just after the previous "\n",
+// or 0). Powers Ctrl+A and the start of the Ctrl+U cut.
+export function lineStartIndex(text, pos) {
+  const chars = Array.from(String(text ?? ""));
+  let i = clamp(Number(pos) || 0, 0, chars.length);
+  while (i > 0 && chars[i - 1] !== "\n") i -= 1;
+  return i;
+}
+
+// Index of the end of the line the caret is on (the next "\n", or end of text).
+// Powers Ctrl+E and the end of the Ctrl+K cut.
+export function lineEndIndex(text, pos) {
+  const chars = Array.from(String(text ?? ""));
+  let i = clamp(Number(pos) || 0, 0, chars.length);
+  while (i < chars.length && chars[i] !== "\n") i += 1;
+  return i;
+}
+
+// Start of the whitespace-delimited word before the caret (skip trailing
+// whitespace, then the word). Powers Ctrl+W / Alt+Backspace.
+export function wordStartIndex(text, pos) {
+  const chars = Array.from(String(text ?? ""));
+  let i = clamp(Number(pos) || 0, 0, chars.length);
+  while (i > 0 && /\s/u.test(chars[i - 1])) i -= 1;
+  while (i > 0 && !/\s/u.test(chars[i - 1])) i -= 1;
+  return i;
+}
+
+// Remove the [from, to) grapheme range; returns the new text and the caret
+// position (collapsed to the cut start).
+export function spliceOut(text, from, to) {
+  const chars = Array.from(String(text ?? ""));
+  const a = clamp(Math.min(from, to), 0, chars.length);
+  const b = clamp(Math.max(from, to), 0, chars.length);
+  return { text: [...chars.slice(0, a), ...chars.slice(b)].join(""), cursor: a };
+}
+
 export function menuKeyAction(menu, keyName) {
   if (!menu?.active) return { handled: false, action: "pass", menu };
   const selected = Number(menu.selected) || 0;
@@ -855,6 +892,40 @@ export function createComposer(deps) {
       }
       if (key.ctrl && key.name === "d") {
         sendHostMessage({ type: "input.eof" });
+        return;
+      }
+      // Standard readline-style line editing.
+      if (key.ctrl && key.name === "a") {
+        cursorPos = lineStartIndex(inputText, cursorPos); // start of line
+        wakeCursor();
+        rerenderInputRegion();
+        return;
+      }
+      if (key.ctrl && key.name === "e") {
+        cursorPos = lineEndIndex(inputText, cursorPos); // end of line
+        wakeCursor();
+        rerenderInputRegion();
+        return;
+      }
+      if (
+        (key.ctrl && (key.name === "u" || key.name === "k" || key.name === "w")) ||
+        ((key.meta || key.alt || key.option) && key.name === "backspace")
+      ) {
+        // Ctrl+U cut to line start · Ctrl+K cut to line end · Ctrl+W /
+        // Alt+Backspace delete the previous word.
+        let from = cursorPos;
+        let to = cursorPos;
+        if (key.name === "k") to = lineEndIndex(inputText, cursorPos);
+        else if (key.name === "u") from = lineStartIndex(inputText, cursorPos);
+        else from = wordStartIndex(inputText, cursorPos);
+        const edited = spliceOut(inputText, from, to);
+        inputText = edited.text;
+        composer.text = inputText;
+        cursorPos = edited.cursor;
+        historyIndex = inputHistory.length;
+        updateMenuFromInput();
+        wakeCursor();
+        rerenderInputRegion();
         return;
       }
       if (key.name === "escape") {

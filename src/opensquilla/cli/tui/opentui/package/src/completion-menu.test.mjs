@@ -4,10 +4,14 @@ import test from "node:test";
 import {
   acceptCompletionText,
   filterCatalog,
+  lineEndIndex,
+  lineStartIndex,
   menuKeyAction,
   shouldDropResponse,
   shouldTriggerMenu,
+  spliceOut,
   tokenUnderCaret,
+  wordStartIndex,
 } from "./composer.mjs";
 import { createDispatcher } from "./ipc.mjs";
 
@@ -178,4 +182,20 @@ test("ipc dispatcher routes completion responses", () => {
     kind: "file",
     items: [],
   });
+});
+
+test("line-edit index helpers compute line and word boundaries", () => {
+  // line start: just after the previous newline (or 0)
+  assert.equal(lineStartIndex("abc", 2), 0);
+  assert.equal(lineStartIndex("ab\ncd", 5), 3);
+  // line end: the next newline (or end of text)
+  assert.equal(lineEndIndex("abc", 1), 3);
+  assert.equal(lineEndIndex("ab\ncd", 0), 2);
+  // word start: skip trailing whitespace, then the word
+  assert.equal(wordStartIndex("hello world", 11), 6);
+  assert.equal(wordStartIndex("hello world  ", 13), 6);
+  assert.equal(wordStartIndex("solo", 4), 0);
+  // splice removes the [from,to) range and collapses the caret to the cut start
+  assert.deepEqual(spliceOut("hello world", 6, 11), { text: "hello ", cursor: 6 });
+  assert.deepEqual(spliceOut("hello world", 11, 6), { text: "hello ", cursor: 6 }); // order-agnostic
 });

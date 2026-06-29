@@ -95,3 +95,37 @@ test("paste preserves newlines and tabs (multi-line / indented paste)", async ()
   const submitted = await pastedThenSubmitted("line1\nline2\tindented");
   expect(submitted).toBe("line1\nline2\tindented");
 });
+
+const ctrl = (name) => ({ name, ctrl: true });
+const typed = (s) => [...s].map((c) => ({ name: c === " " ? "space" : c, sequence: c }));
+
+test("Ctrl+A/Ctrl+E jump to the start/end of the line", async () => {
+  // Ctrl+A moves to line start (the inserted X lands first)...
+  expect(await submittedAfter([...typed("hello"), ctrl("a"), { name: "X", sequence: "X" }])).toBe("Xhello");
+  // ...and Ctrl+E moves back to the end.
+  expect(
+    await submittedAfter([...typed("hello"), ctrl("a"), ctrl("e"), { name: "!", sequence: "!" }]),
+  ).toBe("hello!");
+});
+
+test("Ctrl+W and Alt+Backspace delete the previous word", async () => {
+  expect(await submittedAfter([...typed("hello world"), ctrl("w")])).toBe("hello ");
+  expect(await submittedAfter([...typed("foo bar"), { name: "backspace", meta: true }])).toBe("foo ");
+});
+
+test("Ctrl+U cuts to line start and Ctrl+K cuts to line end", async () => {
+  expect(await submittedAfter([...typed("hello world"), ctrl("u")])).toBe("");
+  expect(await submittedAfter([...typed("hello world"), ctrl("a"), ctrl("k")])).toBe("");
+});
+
+test("line editing acts on the current line in a multi-line draft", async () => {
+  // Alt+Enter inserts a newline; Ctrl+A then goes to the start of the SECOND line.
+  const keys = [
+    ...typed("ab"),
+    { name: "return", meta: true },
+    ...typed("cd"),
+    ctrl("a"),
+    { name: "X", sequence: "X" },
+  ];
+  expect(await submittedAfter(keys)).toBe("ab\nXcd");
+});
