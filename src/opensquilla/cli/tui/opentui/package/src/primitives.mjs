@@ -1,7 +1,18 @@
 export const TOOL_INDENT = " ";
-export const CARD_RULE_LONG = "─".repeat(48);
 export const CARD_RULE_SHORT = "─".repeat(8);
 export const TIMELINE_WRAP_GUARD_CELLS = 6;
+// Turn boxes pad 1 cell each side; card headers/bodies start at content column 0.
+const CARD_CONTENT_INSET = 2;
+
+// A card header rule ("╭─ <label> ───…") that fills to the turn's content width so
+// it aligns with the full-width card body below it, instead of a fixed length that
+// looks stranded on wide terminals and overflows narrow ones. (textWidth is a
+// hoisted function declaration below.)
+export function cardHeaderRule(label, terminalWidth) {
+  const prefix = `╭─ ${label} `;
+  const width = Math.max(textWidth(prefix) + 4, (terminalWidth ?? 80) - CARD_CONTENT_INSET);
+  return prefix + "─".repeat(width - textWidth(prefix));
+}
 
 export function cellWidth(char) {
   return /[ᄀ-ᅟ〈〉⺀-꓏가-힣豈-﫿︐-︙︰-﹯＀-｠￠-￦]/u.test(char)

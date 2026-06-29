@@ -3,7 +3,9 @@ import { STATUS_PULSE_FRAMES } from "./theme.mjs";
 
 export function createTurnView(deps, id) {
   const { renderer, BoxRenderable, TextRenderable, MarkdownRenderable, syntaxStyle, conversationBox } = deps;
-  const box = new BoxRenderable(renderer, { id: `turn-${id}`, flexDirection: "column", paddingLeft: 1, paddingRight: 1 });
+  // marginTop gives each turn a blank line of vertical rhythm so turns read as
+  // distinct groups (proximity) and the conversation has room to breathe.
+  const box = new BoxRenderable(renderer, { id: `turn-${id}`, flexDirection: "column", marginTop: 1, paddingLeft: 1, paddingRight: 1 });
   conversationBox.add(box);
   const blocks = new Map();      // blockId -> { kind, r }
   const runningTools = new Set(); // toolBlock renderers animating

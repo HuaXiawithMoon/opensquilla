@@ -24,7 +24,7 @@ export function createToolBlock(ctx) {
       tail = summary ? ` ${summary}` : "";
       railNode = new TextRenderable(renderer, { id: `${idPrefix}-rail`, content: `${TOOL_INDENT}│`, fg: THEME.detailText });
       box.add(railNode);
-      node = new TextRenderable(renderer, { id: `${idPrefix}-node`, content: `${TOOL_INDENT}${STATUS_PULSE_FRAMES.tool[0]} ${name}${tail}`, fg: THEME.toolAccent });
+      node = new TextRenderable(renderer, { id: `${idPrefix}-node`, content: `${TOOL_INDENT}${STATUS_PULSE_FRAMES.tool[0]} ${name}${tail}`, fg: THEME.brandAccentSoft });
       box.add(node);
       renderer.requestRender?.();
     },
@@ -41,7 +41,7 @@ export function createToolBlock(ctx) {
       const status = patch?.status;
       if (status === "ok" || status === "error") {
         const glyph = status === "error" ? "✗" : "✓";
-        if (node) { node.content = `${TOOL_INDENT}${glyph} ${name}${tail}`; node.fg = status === "error" ? THEME.routerError : THEME.answerAccent; node._done = true; }
+        if (node) { node.content = `${TOOL_INDENT}${glyph} ${name}${tail}`; node.fg = status === "error" ? THEME.error : THEME.success; node._done = true; }
       }
       renderer.requestRender?.();
     },

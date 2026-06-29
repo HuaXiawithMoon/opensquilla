@@ -25,6 +25,9 @@ class NativeTerminalOutputHandle:
         self.approval_surface = approval_surface
 
     async def write_through(self, payload: str) -> None:
+        # Rich markup stays enabled so backend notices (e.g. "[yellow]…[/yellow]")
+        # render styled. Callers passing untrusted model/tool text must escape it
+        # first; NativeStreamRenderer does this for all assistant output.
         console.print(payload, end="")
 
     def stream_output(self) -> AbstractAsyncContextManager[Callable[[str], None]]:

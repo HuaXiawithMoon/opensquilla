@@ -1,5 +1,5 @@
 import { THEME } from "../theme.mjs";
-import { CARD_RULE_LONG, CARD_RULE_SHORT, stripTerminalControls } from "../primitives.mjs";
+import { CARD_RULE_SHORT, cardHeaderRule, stripTerminalControls } from "../primitives.mjs";
 
 export function createPromptBlock(ctx) {
   const { renderer, TextRenderable, box, idPrefix } = ctx;
@@ -9,7 +9,7 @@ export function createPromptBlock(ctx) {
   };
   return {
     begin(meta) {
-      add("top", `╭─ prompt ${CARD_RULE_LONG}`);
+      add("top", cardHeaderRule("prompt", renderer.terminalWidth));
       stripTerminalControls(String(meta?.text ?? "")).split("\n").forEach((line, i) => add(`l${i}`, `│ ${line}`));
       add("bot", `╰${CARD_RULE_SHORT}`);
       renderer.requestRender?.();

@@ -7,6 +7,8 @@ import contextlib
 from collections.abc import Awaitable
 from typing import Any
 
+from rich.markup import escape as _escape
+
 from opensquilla.cli.tui.backend.contracts import (
     TuiDispatch,
     TuiInputKind,
@@ -148,9 +150,7 @@ async def run_tui_runtime(
         try:
             while True:
                 can_read_input = (
-                    config.concurrent_input_during_turn
-                    or turn_task is None
-                    or turn_task.done()
+                    config.concurrent_input_during_turn or turn_task is None or turn_task.done()
                 )
                 if next_line_task is None and can_read_input:
                     await _ensure_next_line_task()
@@ -183,7 +183,24 @@ async def run_tui_runtime(
 
                 if next_line_task is None or not next_line_task.done():
                     continue
-                user_input = next_line_task.result()
+                try:
+                    user_input = next_line_task.result()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    # A surface/host read failure (e.g. the OpenTUI sidecar
+                    # crashed or sent an error frame) must degrade to a clean
+                    # shutdown with a notice rather than tearing the chat
+                    # process down with an unhandled traceback.
+                    next_line_task = None
+                    if turn_task is not None and not turn_task.done():
+                        turn_task.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await turn_task
+                        turn_task = None
+                    if hooks.notice is not None:
+                        hooks.notice(f"[red]Input surface error: {_escape(str(exc))}[/red]")
+                    return runtime_state
                 next_line_task = None
 
                 if user_input is None:

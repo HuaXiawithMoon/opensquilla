@@ -259,9 +259,7 @@ async def test_runtime_can_keep_bottom_input_live_during_turn() -> None:
     second_input_started = asyncio.Event()
     surface = _FakeSurface(
         inputs,
-        on_next_line=lambda: second_input_started.set()
-        if surface.next_line_calls >= 2
-        else None,
+        on_next_line=lambda: second_input_started.set() if surface.next_line_calls >= 2 else None,
     )
     first_started = asyncio.Event()
     finish_first = asyncio.Event()
@@ -599,3 +597,52 @@ async def test_runtime_installs_surface_redraw_callback_for_resize() -> None:
     await asyncio.wait_for(task, timeout=2.0)
 
     assert surface.redraw_count == 1
+
+
+class _RaisingSurface:
+    """Surface whose ``next_line`` fails, modelling an OpenTUI host read error."""
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.cancel_callbacks: list[Any] = []
+        self.shutdown_callbacks: list[Any] = []
+
+    async def next_line(self) -> str | None:
+        raise self._error
+
+    def set_cancel_callback(self, cb) -> None:  # noqa: ANN001
+        self.cancel_callbacks.append(cb)
+
+    def set_shutdown_callback(self, cb) -> None:  # noqa: ANN001
+        self.shutdown_callbacks.append(cb)
+
+    def emit_eof(self) -> None:
+        return None
+
+    async def write_through(self, payload: str) -> None:
+        return None
+
+    @property
+    def redraw_callback(self) -> Callable[[], None]:
+        return lambda: None
+
+
+@pytest.mark.asyncio
+async def test_runtime_degrades_gracefully_on_surface_read_error() -> None:
+    surface = _RaisingSurface(RuntimeError("OpenTUI host error: [boom]"))
+    notices: list[str] = []
+
+    async def _dispatch(_user_input: str) -> bool:
+        raise AssertionError("dispatch should not run when input never arrives")
+
+    result = await run_tui_runtime(
+        dispatch=_dispatch,
+        surface_factory=_surface_factory(surface),
+        config=_runtime_config(),
+        hooks=_runtime_hooks(notice=notices.append),
+    )
+
+    assert isinstance(result, TuiRuntimeState)
+    assert any("Input surface error" in notice for notice in notices)
+    # the dynamic error text is markup-escaped so the notice itself cannot crash.
+    assert any("\\[boom]" in notice for notice in notices)

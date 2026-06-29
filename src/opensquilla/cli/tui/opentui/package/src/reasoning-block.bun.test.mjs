@@ -3,7 +3,7 @@
 // The original bug: a streaming thinking block briefly flashed the cyan answer
 // CARD (╭─ answer ─ … ╰─) because the renderer opened text as an answer block
 // and only later retyped it to thinking. With reasoning now a first-class
-// stream, a thinking block must render as plain purple ✱ lines with NO card
+// stream, a thinking block must render as plain purple ✻ lines with NO card
 // border, while an answer block keeps its card. A text-snapshot harness could
 // miss colour, but the card is made of border glyphs, so we assert on the
 // captured glyphs directly.
@@ -60,11 +60,11 @@ function flatText(frame) {
     .join("\n");
 }
 
-test("a streaming thinking block shows purple ✱ text with no answer card", async () => {
+test("a streaming thinking block shows purple ✻ text with no answer card", async () => {
   const text = flatText(await renderBlock(createThinkingBlock));
   // reasoning is visible while still streaming (incremental render)
   expect(text).toContain("partial reasoning");
-  expect(text).toContain("✱");
+  expect(text).toContain("✻");
   // the decisive check: NO answer card border leaks around the thinking stream
   expect(text).not.toContain("answer");
   expect(text).not.toContain("╭");
@@ -83,7 +83,7 @@ test("a reasoning block shows only a collapsed Thinking… marker, never the pro
   // The reasoning block is fed the same deltas via renderBlock (which calls
   // append), but it must NOT surface the verbatim reasoning — only the marker.
   const text = flatText(await renderBlock(createReasoningBlock));
-  expect(text).toContain("✱");
+  expect(text).toContain("✻");
   expect(text).toContain("Thinking");
   // the decisive checks: the reasoning PROCESS text is never shown, and no card
   expect(text).not.toContain("partial reasoning");

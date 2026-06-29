@@ -6,7 +6,7 @@ export function createErrorBlock(ctx) {
   return {
     begin(meta) {
       const n = new TextRenderable(renderer, {
-        id: `${idPrefix}-err`, content: `${TOOL_INDENT}✗ ${stripTerminalControls(String(meta?.text ?? ""))}`, fg: THEME.routerError,
+        id: `${idPrefix}-err`, content: `${TOOL_INDENT}✗ ${stripTerminalControls(String(meta?.text ?? ""))}`, fg: THEME.error,
       });
       box.add(n); renderer.requestRender?.();
     },

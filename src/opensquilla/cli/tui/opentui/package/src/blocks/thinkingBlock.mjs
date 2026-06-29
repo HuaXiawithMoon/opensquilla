@@ -2,7 +2,7 @@ import { THEME } from "../theme.mjs";
 import { TOOL_INDENT, clipToCells, stripTerminalControls, timelineAvailCells } from "../primitives.mjs";
 
 // Thinking renders incrementally as reasoning streams in. Each append re-lays
-// the visible lines in place (purple ✱, no card) so the model's thinking
+// the visible lines in place (purple ✻, no card) so the model's thinking
 // scrolls live rather than appearing all at once when the block closes.
 export function createThinkingBlock(ctx) {
   const { renderer, TextRenderable, box, idPrefix } = ctx;
@@ -20,14 +20,14 @@ export function createThinkingBlock(ctx) {
     }
     const lines = trimmed.split("\n");
     lines.forEach((line, i) => {
-      const prefix = i === 0 ? `${TOOL_INDENT}✱ ` : `${TOOL_INDENT}│ `;
+      const prefix = i === 0 ? `${TOOL_INDENT}✻ ` : `${TOOL_INDENT}│ `;
       const avail = timelineAvailCells(prefix, renderer.terminalWidth);
       const content = `${prefix}${clipToCells(line, avail)}`;
       const id = `${idPrefix}-l${i}`;
       // Reuse the existing node for a line we have already drawn (the streaming
       // last line grows in place); add a node for each newly revealed line.
       box.remove?.(id);
-      const n = new TextRenderable(renderer, { id, content, fg: THEME.modelText });
+      const n = new TextRenderable(renderer, { id, content, fg: THEME.thinkingAccent });
       box.add(n);
     });
     lineCount = lines.length;

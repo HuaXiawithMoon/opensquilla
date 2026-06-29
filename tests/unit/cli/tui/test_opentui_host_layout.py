@@ -74,8 +74,8 @@ def test_answer_block_is_streaming_left_border_markdown_card() -> None:
     assert "MarkdownRenderable" in answer
     assert "streaming: true" in answer
     assert 'border: ["left"]' in answer
-    assert "borderColor: THEME.toolAccent" in answer
-    assert "╭─ answer ─ squilla" in answer
+    assert "borderColor: THEME.answerFrame" in answer
+    assert 'cardHeaderRule("answer ─ squilla"' in answer
     # streaming stops on end()
     assert "md.streaming = false" in answer
     # the retype mechanism is gone: no teardown contract with turnView
@@ -84,8 +84,8 @@ def test_answer_block_is_streaming_left_border_markdown_card() -> None:
 
 def test_thinking_block_is_purple_glyph_timeline() -> None:
     thinking = _read("blocks/thinkingBlock.mjs")
-    assert "✱" in thinking
-    assert "THEME.modelText" in thinking
+    assert "✻" in thinking
+    assert "THEME.thinkingAccent" in thinking
     # reasoning renders incrementally as it streams (render called from append)
     assert "append(delta)" in thinking
     assert "render()" in thinking
@@ -101,19 +101,19 @@ def test_tool_block_groups_detail_and_pulses() -> None:
     # detail clipped to viewport (no rail-breaking wrap)
     assert "clipToCells" in tool
     assert "timelineAvailCells" in tool
-    assert "THEME.toolAccent" in tool
+    assert "THEME.brandAccentSoft" in tool
 
 
 def test_prompt_and_usage_and_error_blocks() -> None:
     prompt = _read("blocks/promptBlock.mjs")
     usage = _read("blocks/usageBlock.mjs")
     error = _read("blocks/errorBlock.mjs")
-    assert "╭─ prompt" in prompt
+    assert 'cardHeaderRule("prompt"' in prompt
     assert "THEME.promptAccent" in prompt
     assert "·" in usage
     assert "THEME.muted" in usage
     assert "✗" in error
-    assert "THEME.routerError" in error
+    assert "THEME.error" in error
 
 
 def test_turnview_routes_block_messages() -> None:

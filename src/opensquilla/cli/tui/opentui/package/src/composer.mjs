@@ -267,10 +267,10 @@ export function createComposer(deps) {
   let fileDebounce = null;
 
   function colorForStyle(style) {
-    if (style === "warning") return THEME.routerWarning;
-    if (style === "error") return THEME.routerError;
+    if (style === "warning") return THEME.warning;
+    if (style === "error") return THEME.error;
     if (style === "dim") return THEME.muted;
-    return THEME.routerNormal;
+    return THEME.success;
   }
 
   function statusIcon() {
@@ -396,7 +396,7 @@ export function createComposer(deps) {
       const content = `${marker}${label}${description ? `  ${description}` : ""}`;
       return {
         content: clipToCells(content, completionMenuRowCells()),
-        fg: index === selected ? THEME.toolAccent : THEME.text,
+        fg: index === selected ? THEME.brandAccentSoft : THEME.text,
       };
     });
   }
@@ -522,8 +522,8 @@ export function createComposer(deps) {
     });
     routerNode.add(new TextRenderable(renderer, { id: "router-model", content: fixedRouterRow("model", routerModelValue()), fg: THEME.text }));
     routerNode.add(new TextRenderable(renderer, { id: "router-route", content: fixedRouterRow("route", routerRouteValue()), fg: THEME.routeText }));
-    routerNode.add(new TextRenderable(renderer, { id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: THEME.savingText }));
-    routerNode.add(new TextRenderable(renderer, { id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: THEME.routerWarning }));
+    routerNode.add(new TextRenderable(renderer, { id: "router-saving", content: fixedRouterRow("save", routerState.saving), fg: THEME.metricPositive }));
+    routerNode.add(new TextRenderable(renderer, { id: "router-context", content: fixedRouterRow("ctx", routerState.context), fg: THEME.warning }));
     inputBox.add(routerNode);
     renderCompletionMenu();
     syncTerminalCursorToCaret();

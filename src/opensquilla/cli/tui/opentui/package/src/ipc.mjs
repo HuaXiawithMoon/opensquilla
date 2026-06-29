@@ -30,6 +30,7 @@ export function createDispatcher(h) {
       case "prompt.echo": return h.promptEcho?.(m);
       case "model.text": return h.modelText?.(m);
       case "scrollback.write": return h.scrollback?.(m);
+      case "theme.set": return h.themeSet?.(m);
       case "shutdown": return h.shutdown(m);
       default: return h.unknown(m);
     }

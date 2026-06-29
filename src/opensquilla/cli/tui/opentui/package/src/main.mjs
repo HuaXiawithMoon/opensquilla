@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import process from "node:process";
-import { THEME } from "./theme.mjs";
+import { THEME, applyTheme } from "./theme.mjs";
 import { stripTerminalControls } from "./primitives.mjs";
 import { createComposer } from "./composer.mjs";
 import { createTurnView } from "./turnView.mjs";
@@ -25,6 +25,11 @@ const TO_PYTHON_FD = Number(process.env.OPENSQUILLA_OPENTUI_TO_PYTHON_FD ?? "4")
 const FOOTER_HEIGHT = 6;
 
 async function main() {
+  // Resolve the active theme before anything reads THEME (unknown names fall
+  // back to the default). Set with OPENSQUILLA_TUI_THEME=<name>; switch live with
+  // the /theme slash command, which sends a theme.set message handled below.
+  applyTheme(process.env.OPENSQUILLA_TUI_THEME);
+
   const { BoxRenderable, TextRenderable, ScrollBoxRenderable, MarkdownRenderable, SyntaxStyle, createCliRenderer } = await import("@opentui/core");
 
   const renderer = await createCliRenderer({
@@ -32,6 +37,10 @@ async function main() {
     exitOnCtrlC: false,
     // OpenTUI routes wheel events to ScrollBox without touching input history.
     useMouse: true,
+    // The UI owns an opaque dark background on every surface so it renders the
+    // same on any terminal theme (a transparent base made near-white text
+    // invisible on light terminals) and the terminal diff always clears cells.
+    backgroundColor: THEME.appBg,
   });
   const syntaxStyle = SyntaxStyle.create();
 
@@ -42,6 +51,7 @@ async function main() {
     top: 0,
     right: 0,
     height: Math.max(1, (renderer.terminalHeight ?? 24) - FOOTER_HEIGHT),
+    backgroundColor: THEME.appBg,
     stickyScroll: true,
     stickyStart: "bottom",
     scrollY: true,
@@ -57,6 +67,9 @@ async function main() {
     right: 0,
     bottom: 0,
     height: FOOTER_HEIGHT,
+    // Opaque so the footer fully repaints every frame; without it, cells vacated
+    // when the composer/router boxes move on resize/reflow keep stale glyphs.
+    backgroundColor: THEME.footerBg,
   });
   renderer.root.add(inputBox);
 
@@ -135,13 +148,23 @@ async function main() {
       turn.begin(`prompt-${scrollbackSeq++}`, "prompt", { text: String(m.text ?? "") });
     },
     // model.text is a minor queue marker. Render it as a thinking line (purple
-    // ✱) by seeding a thinking block and flushing it immediately on end.
+    // ✻) by seeding a thinking block and flushing it immediately on end.
     modelText: (m) => {
       const turn = ensureTurn();
       const id = `note-${scrollbackSeq++}`;
       turn.begin(id, "thinking", {});
       turn.append(id, String(m.text ?? ""));
       turn.end(id);
+    },
+    // Live theme switch (sent by the /theme slash command). Repaint every owned
+    // surface and re-render the footer; new content picks up THEME automatically.
+    themeSet: (m) => {
+      applyTheme(m.name);
+      renderer.setBackgroundColor?.(THEME.appBg);
+      conversationBox.backgroundColor = THEME.appBg;
+      inputBox.backgroundColor = THEME.footerBg;
+      composer.rerender();
+      renderer.requestRender?.();
     },
     // scrollback is a lifecycle-less raw line dump (no begin/end); rendered inline
     // here rather than as a block — the only orchestration-layer rendering exception.
