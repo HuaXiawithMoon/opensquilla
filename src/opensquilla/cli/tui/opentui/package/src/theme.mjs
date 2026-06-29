@@ -7,28 +7,30 @@
 // every theme is internally consistent and on-brand by construction — adding a
 // theme is just supplying one semantic palette.
 //
-// opensquilla-dark / -light are mirrored verbatim from the web UI; the rest are
-// distinct on-brand aesthetics that keep the orange accent family and the
-// semantic run-state structure. All foregrounds clear WCAG AA on their own bg.
+// opensquilla-dark / -light follow the web UI palette, nudged only where a token
+// would otherwise fail WCAG AA on the TUI's elevated surfaces (the picker/menu
+// overlay); the rest are distinct on-brand aesthetics that keep the orange accent
+// family and the semantic run-state structure. Every foreground clears WCAG AA on
+// the surfaces it renders on — enforced by theme-contrast.bun.test.mjs.
 
 export const PALETTES = Object.freeze({
   // Canonical — verbatim from opensquilla-webui/src/assets/base.css.
   "opensquilla-dark": {
     bg: "#121212", bgSurface: "#1A1A1B", bgElevated: "#232325",
-    text: "#ECECEC", textMuted: "#A6A6A8", textDim: "#878789",
+    text: "#ECECEC", textMuted: "#A6A6A8", textDim: "#8C8C8E",
     accent: "#EC6A1A", accentSecondary: "#FF8A4C",
     ok: "#39D7A2", warn: "#E8B23A", danger: "#FF6B6B", info: "#56C2E6", queued: "#8C7DF2",
   },
   "opensquilla-light": {
     bg: "#F7F7F8", bgSurface: "#FFFFFF", bgElevated: "#F0F0F2",
     text: "#18181A", textMuted: "#56565A", textDim: "#6C6C70",
-    accent: "#B0440A", accentSecondary: "#DD6224",
+    accent: "#B0440A", accentSecondary: "#B14E1D",
     ok: "#0E7A52", warn: "#8A6410", danger: "#C2382E", info: "#1E6E8C", queued: "#5A48C0",
   },
   // Deep indigo night — cool and calm, brand orange for warmth.
   midnight: {
     bg: "#0B1021", bgSurface: "#121831", bgElevated: "#1A2342",
-    text: "#DCE3F2", textMuted: "#93A0C0", textDim: "#6E7BA0",
+    text: "#DCE3F2", textMuted: "#93A0C0", textDim: "#828DAD",
     accent: "#EC6A1A", accentSecondary: "#FF9A52",
     ok: "#4FD6B0", warn: "#F0C674", danger: "#FF6B8A", info: "#6AB7FF", queued: "#A78BFA",
   },
@@ -42,7 +44,7 @@ export const PALETTES = Object.freeze({
   // Cool neutral gray-blue — understated and professional.
   slate: {
     bg: "#15181C", bgSurface: "#1C2026", bgElevated: "#252B33",
-    text: "#E2E6EB", textMuted: "#99A2AE", textDim: "#727B86",
+    text: "#E2E6EB", textMuted: "#99A2AE", textDim: "#89929B",
     accent: "#EC6A1A", accentSecondary: "#FF8A4C",
     ok: "#5FB89A", warn: "#D7B86A", danger: "#E47C7C", info: "#6FA8C9", queued: "#9384C7",
   },
@@ -56,14 +58,14 @@ export const PALETTES = Object.freeze({
   // Nordic polar night — recognizable cool palette with the brand accent.
   nord: {
     bg: "#2E3440", bgSurface: "#3B4252", bgElevated: "#434C5E",
-    text: "#ECEFF4", textMuted: "#C0C7D4", textDim: "#9AA3B4",
-    accent: "#EC6A1A", accentSecondary: "#FF9A52",
-    ok: "#A3BE8C", warn: "#EBCB8B", danger: "#BF616A", info: "#88C0D0", queued: "#B48EAD",
+    text: "#ECEFF4", textMuted: "#C0C7D4", textDim: "#B6BDC9",
+    accent: "#EE7C35", accentSecondary: "#FFA86A",
+    ok: "#A3BE8C", warn: "#EBCB8B", danger: "#D89FA5", info: "#88C0D0", queued: "#B690AF",
   },
   // Near-monochrome — the orange accent is the only saturated hue.
   mono: {
     bg: "#0F0F0F", bgSurface: "#181818", bgElevated: "#222222",
-    text: "#EAEAEA", textMuted: "#9A9A9A", textDim: "#6E6E6E",
+    text: "#EAEAEA", textMuted: "#9A9A9A", textDim: "#8A8A8A",
     accent: "#EC6A1A", accentSecondary: "#FF8A4C",
     ok: "#A7C2B0", warn: "#C9B98A", danger: "#CE9A9A", info: "#9FB3C0", queued: "#B0A6C8",
   },
