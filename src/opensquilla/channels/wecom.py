@@ -60,6 +60,7 @@ _DEFAULT_WEBSOCKET_URL = "wss://openws.work.weixin.qq.com"
 _WEBSOCKET_HANDSHAKE_TIMEOUT_S = 10.0
 _WEBSOCKET_REQUEST_TIMEOUT_S = 10.0
 _WEBSOCKET_PING_INTERVAL_S = 30.0
+_WEBSOCKET_RECONNECT_BACKOFF_S: tuple[float, ...] = (1.0, 2.0, 5.0, 10.0, 30.0)
 
 _APP_CMD_SUBSCRIBE = "aibot_subscribe"
 _APP_CMD_CALLBACK = "aibot_msg_callback"
@@ -115,6 +116,7 @@ class WeComChannelConfig(BaseModel):
     bot_id: str = ""
     bot_secret: str = ""
     websocket_url: str = _DEFAULT_WEBSOCKET_URL
+    device_id: str = ""
     corp_id: str = ""
     corp_secret: str = ""
     agent_id_int: int = 0
@@ -158,7 +160,12 @@ class WeComChannel:
     _token_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
     _refresh_task: asyncio.Task | None = field(default=None, init=False, repr=False)
     _ws: Any | None = field(default=None, init=False, repr=False)
+    _ws_session: Any | None = field(default=None, init=False, repr=False)
     _ws_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _ws_heartbeat_task: asyncio.Task | None = field(default=None, init=False, repr=False)
+    _ws_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False)
+    _ws_stopping: bool = field(default=False, init=False, repr=False)
+    _device_id: str = field(default="", init=False, repr=False)
     _pending_ws_responses: dict[str, asyncio.Future[dict[str, Any]]] = field(
         default_factory=dict, init=False, repr=False
     )
@@ -174,6 +181,7 @@ class WeComChannel:
 
     def __post_init__(self) -> None:
         self._dedupe = EventDedupeCache(max_size=_DEDUPE_SIZE)
+        self._device_id = self.config.device_id.strip() or uuid4().hex
         if self.config.encoding_aes_key and self.config.token and self.config.corp_id:
             self._crypto = WeComCrypto(
                 token=self.config.token,
@@ -384,25 +392,76 @@ class WeComChannel:
         return payload if isinstance(payload, dict) else None
 
     async def _connect_websocket(self) -> Any:
-        import websockets
+        import aiohttp
 
-        return await websockets.connect(
-            self.config.websocket_url,
-            compression=None,
-            ping_interval=_WEBSOCKET_PING_INTERVAL_S,
-            ping_timeout=_WEBSOCKET_PING_INTERVAL_S,
-        )
+        self._ws_session = aiohttp.ClientSession(trust_env=_trust_env())
+        try:
+            return await self._ws_session.ws_connect(
+                self.config.websocket_url,
+                heartbeat=_WEBSOCKET_PING_INTERVAL_S,
+                timeout=_WEBSOCKET_HANDSHAKE_TIMEOUT_S,
+                compress=0,
+            )
+        except Exception:
+            await self._ws_session.close()
+            self._ws_session = None
+            raise
+
+    def _websocket_is_open(self) -> bool:
+        if self._ws is None or not self._connected:
+            return False
+        return not bool(getattr(self._ws, "closed", False))
+
+    async def _close_websocket_transport(self) -> None:
+        if self._ws is not None:
+            close = getattr(self._ws, "close", None)
+            if callable(close):
+                await close()
+            self._ws = None
+        if self._ws_session is not None:
+            await self._ws_session.close()
+            self._ws_session = None
+        self._connected = False
+
+    def _fail_pending_ws_responses(self, exc: Exception) -> None:
+        for future in list(self._pending_ws_responses.values()):
+            if not future.done():
+                future.set_exception(exc)
+        self._pending_ws_responses.clear()
 
     async def _ws_send_json(self, payload: dict[str, Any]) -> None:
         if self._ws is None:
             raise RuntimeError("wecom websocket is not connected")
+        send_json = getattr(self._ws, "send_json", None)
+        if callable(send_json):
+            await send_json(payload)
+            return
         await self._ws.send(json.dumps(payload, ensure_ascii=False))
 
     async def _ws_recv_json(self) -> dict[str, Any]:
         if self._ws is None:
             raise RuntimeError("wecom websocket is not connected")
         while True:
-            payload = self._parse_ws_json(await self._ws.recv())
+            if hasattr(self._ws, "receive"):
+                message = await self._ws.receive()
+                message_type = getattr(message, "type", None)
+                type_name = str(getattr(message_type, "name", message_type))
+                type_value = getattr(message_type, "value", message_type)
+                type_code = type_value if isinstance(type_value, int) else None
+                if (
+                    type_name in {"CLOSE", "CLOSED", "CLOSING", "ERROR"}
+                    or type_code in {8, 256, 257, 258}
+                ):
+                    detail = getattr(message, "data", "")
+                    close_code = getattr(self._ws, "close_code", None)
+                    raise RuntimeError(
+                        f"WeCom websocket closed: type={type_name} "
+                        f"close_code={close_code} detail={detail}"
+                    )
+                raw = getattr(message, "data", message)
+            else:
+                raw = await self._ws.recv()
+            payload = self._parse_ws_json(raw)
             if payload is not None:
                 return payload
 
@@ -417,35 +476,69 @@ class WeComChannel:
         errmsg = str(payload.get("errmsg") or body.get("errmsg") or "")
         return errcode, errmsg
 
-    async def _start_websocket(self) -> None:
+    async def _open_authenticated_websocket(self) -> None:
         self._require_websocket_credentials()
-        self._ws = await self._connect_websocket()
-        req_id = self._new_req_id("subscribe")
-        await self._ws_send_json(
-            {
-                "cmd": _APP_CMD_SUBSCRIBE,
-                "headers": {"req_id": req_id},
-                "body": {
-                    "bot_id": self.config.bot_id,
-                    "secret": self.config.bot_secret,
-                },
-            }
-        )
-        auth_payload = await asyncio.wait_for(
-            self._wait_for_ws_response(req_id), timeout=_WEBSOCKET_HANDSHAKE_TIMEOUT_S
-        )
-        errcode, errmsg = self._response_error(auth_payload)
-        if errcode not in (0, None):
-            raise WeComAuthError(
-                f"aibot_subscribe failed: errcode={errcode} errmsg={errmsg or 'unknown'}"
+        await self._close_websocket_transport()
+        try:
+            self._ws = await self._connect_websocket()
+            req_id = self._new_req_id("subscribe")
+            await self._ws_send_json(
+                {
+                    "cmd": _APP_CMD_SUBSCRIBE,
+                    "headers": {"req_id": req_id},
+                    "body": {
+                        "bot_id": self.config.bot_id,
+                        "secret": self.config.bot_secret,
+                        "device_id": self._device_id,
+                    },
+                }
             )
-        self._connected = True
+            auth_payload = await asyncio.wait_for(
+                self._wait_for_ws_response(req_id), timeout=_WEBSOCKET_HANDSHAKE_TIMEOUT_S
+            )
+            errcode, errmsg = self._response_error(auth_payload)
+            if errcode not in (0, None):
+                raise WeComAuthError(
+                    f"aibot_subscribe failed: errcode={errcode} errmsg={errmsg or 'unknown'}"
+                )
+            self._connected = True
+        except Exception:
+            await self._close_websocket_transport()
+            raise
+
+    async def _ensure_websocket_connected(self) -> None:
+        if self._websocket_is_open():
+            return
+        async with self._ws_lock:
+            if self._websocket_is_open():
+                return
+            await self._open_authenticated_websocket()
+            if self._ws_task is None or self._ws_task.done():
+                self._ws_task = asyncio.create_task(
+                    self._websocket_receive_loop(),
+                    name=f"wecom-websocket:{self.config.name}",
+                )
+
+    async def _start_websocket(self) -> None:
+        self._ws_stopping = False
+        async with self._ws_lock:
+            await self._open_authenticated_websocket()
         self._ws_task = asyncio.create_task(
             self._websocket_receive_loop(), name=f"wecom-websocket:{self.config.name}"
+        )
+        self._ws_heartbeat_task = asyncio.create_task(
+            self._websocket_heartbeat_loop(),
+            name=f"wecom-websocket-heartbeat:{self.config.name}",
         )
         log.info("wecom.websocket_started", name=self.config.name)
 
     async def _stop_websocket(self) -> None:
+        self._ws_stopping = True
+        if self._ws_heartbeat_task is not None:
+            self._ws_heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._ws_heartbeat_task
+            self._ws_heartbeat_task = None
         if self._ws_task is not None:
             self._ws_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -455,13 +548,7 @@ class WeComChannel:
             if not future.done():
                 future.cancel()
         self._pending_ws_responses.clear()
-        if self._ws is not None:
-            close = getattr(self._ws, "close", None)
-            if callable(close):
-                await close()
-            self._ws = None
-        if self.config.connection_mode == "websocket":
-            self._connected = False
+        await self._close_websocket_transport()
 
     async def _wait_for_ws_response(self, req_id: str) -> dict[str, Any]:
         while True:
@@ -471,19 +558,55 @@ class WeComChannel:
             await self._handle_websocket_payload(payload, pre_auth=True)
 
     async def _websocket_receive_loop(self) -> None:
-        try:
-            while True:
+        backoff_index = 0
+        while True:
+            try:
                 payload = await self._ws_recv_json()
                 await self._handle_websocket_payload(payload)
+                backoff_index = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if self._ws_stopping:
+                    return
+                self._connected = False
+                self._fail_pending_ws_responses(exc)
+                log.warning("wecom.websocket_error", error=str(exc))
+                delay = _WEBSOCKET_RECONNECT_BACKOFF_S[
+                    min(backoff_index, len(_WEBSOCKET_RECONNECT_BACKOFF_S) - 1)
+                ]
+                backoff_index += 1
+                await asyncio.sleep(delay)
+                try:
+                    async with self._ws_lock:
+                        if not self._websocket_is_open():
+                            await self._open_authenticated_websocket()
+                    backoff_index = 0
+                    log.info("wecom.websocket_reconnected", name=self.config.name)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as reconnect_exc:
+                    self._connected = False
+                    log.warning("wecom.websocket_reconnect_failed", error=str(reconnect_exc))
+
+    async def _websocket_heartbeat_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(_WEBSOCKET_PING_INTERVAL_S)
+                if self._ws_stopping or not self._websocket_is_open():
+                    continue
+                try:
+                    await self._ws_send_json(
+                        {
+                            "cmd": _APP_CMD_PING,
+                            "headers": {"req_id": self._new_req_id("ping")},
+                            "body": {},
+                        }
+                    )
+                except Exception as exc:
+                    log.debug("wecom.websocket_heartbeat_failed", error=str(exc))
         except asyncio.CancelledError:
             raise
-        except Exception as exc:
-            self._connected = False
-            for future in list(self._pending_ws_responses.values()):
-                if not future.done():
-                    future.set_exception(exc)
-            self._pending_ws_responses.clear()
-            log.warning("wecom.websocket_error", error=str(exc))
 
     async def _handle_websocket_payload(
         self, payload: dict[str, Any], *, pre_auth: bool = False
@@ -526,8 +649,7 @@ class WeComChannel:
         *,
         req_id: str | None = None,
     ) -> dict[str, Any]:
-        if self._ws is None or not self._connected:
-            raise RuntimeError("wecom websocket is not connected")
+        await self._ensure_websocket_connected()
         request_id = req_id or self._new_req_id(cmd)
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending_ws_responses[request_id] = future
@@ -828,9 +950,19 @@ class WeComChannel:
             "markdown": {"content": message.content},
         }
         if reply_req_id:
-            await self._send_ws_request(_APP_CMD_RESPONSE, body, req_id=reply_req_id)
-            log.info("wecom.websocket_reply_sent", req_id=reply_req_id)
-            return
+            try:
+                await self._send_ws_request(_APP_CMD_RESPONSE, body, req_id=reply_req_id)
+                log.info("wecom.websocket_reply_sent", req_id=reply_req_id)
+                return
+            except WeComApiError as exc:
+                if not target:
+                    raise
+                log.warning(
+                    "wecom.websocket_reply_failed_fallback_send",
+                    code=exc.code,
+                    error=str(exc),
+                    chatid=target,
+                )
         if not target:
             raise WeComApiError("chatid is required for proactive websocket sends")
         await self._send_ws_request(_APP_CMD_SEND, {"chatid": target, **body})

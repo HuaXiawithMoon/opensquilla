@@ -1348,6 +1348,7 @@ class WeComChannelEntry(ConfiguredChannelEntry):
     bot_id: str = ""
     bot_secret: str = ""
     websocket_url: str = "wss://openws.work.weixin.qq.com"
+    device_id: str = ""
     corp_id: str = ""
     corp_secret: str = ""
     agent_id_int: int = 0

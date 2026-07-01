@@ -153,6 +153,8 @@ def test_wecom_mode_specific_fields_are_conditional():
     assert fields["bot_id"].show_when == {"connection_mode": "websocket"}
     assert fields["bot_secret"].show_when == {"connection_mode": "websocket"}
     assert fields["websocket_url"].show_when == {"connection_mode": "websocket"}
+    assert fields["device_id"].show_when == {"connection_mode": "websocket"}
+    assert fields["device_id"].advanced is True
     assert fields["corp_id"].show_when == {"connection_mode": "webhook"}
     assert fields["corp_secret"].show_when == {"connection_mode": "webhook"}
     assert fields["token"].show_when == {"connection_mode": "webhook"}
