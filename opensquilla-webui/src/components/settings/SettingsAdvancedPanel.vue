@@ -2,6 +2,7 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import ControlSwitch from '@/components/ControlSwitch.vue'
+import CompactionContinuityGroup from '@/components/settings/CompactionContinuityGroup.vue'
 import MemoryLearningGroup from '@/components/settings/MemoryLearningGroup.vue'
 
 const { t } = useI18n()
@@ -134,6 +135,8 @@ const agentConfigAriaLabel = computed(() =>
         <ControlSwitch name="labs_approval_poll" :checked="approvalPoll" :aria-label="t('setup.advanced.approvalPollLabel')" @change="setApprovalPoll" />
       </div>
     </label>
+
+    <CompactionContinuityGroup />
 
     <MemoryLearningGroup />
 

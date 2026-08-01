@@ -273,3 +273,49 @@ def test_persisted_tool_result_marks_oversized_non_json_prefix() -> None:
     assert segment["result"] == result[:2000]
     assert segment["result_truncated"] is True
     assert segment["result_original_chars"] == len(result)
+
+
+def test_persisted_session_search_result_is_pointer_only_receipt() -> None:
+    result = json.dumps(
+        {
+            "query": "q" * 2_000,
+            "searched_scope": "current_session",
+            "result_count": 1,
+            "results": [
+                {
+                    "ref": "anchor:3:entry_007",
+                    "anchor": "3:entry_007",
+                    "message_id": "message-7",
+                    "role": "assistant",
+                    "source": "archived",
+                    "created_at": 123,
+                    "snippet": "BORROWED_SOURCE_TEXT_MUST_NOT_BE_PERSISTED" * 100,
+                }
+            ],
+        }
+    )
+
+    segment = _persisted_tool_result_segment(
+        ToolResultEvent(
+            tool_use_id="call_session_search",
+            tool_name="session_search",
+            result=result,
+            is_error=False,
+        )
+    )
+    receipt = json.loads(segment["result"])
+
+    assert segment["retrieval_receipt"] is True
+    assert receipt["kind"] == "session_search_receipt"
+    assert receipt["refs"] == [
+        {
+            "ref": "anchor:3:entry_007",
+            "anchor": "3:entry_007",
+            "message_id": "message-7",
+            "role": "assistant",
+            "source": "archived",
+            "created_at": 123,
+        }
+    ]
+    assert len(receipt["query"]) <= 256
+    assert "BORROWED_SOURCE_TEXT_MUST_NOT_BE_PERSISTED" not in segment["result"]

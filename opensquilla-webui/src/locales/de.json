@@ -1370,7 +1370,10 @@
       "dataMaintenanceAria": "Datenpflege öffnen",
       "runTraceLabel": "Run-Trace-Schublade in Protokollen",
       "runTraceDesc": "Macht Protokollzeilen interaktiv und öffnet eine zeilenweise Detailschublade für Knotenschritte in der Protokollansicht.",
-      "runTraceAria": "Run-Trace-Schublade in Protokollen (wird nach dem Neuladen wirksam)"
+      "runTraceAria": "Run-Trace-Schublade in Protokollen (wird nach dem Neuladen wirksam)",
+      "compactionAnchorsLabel": "Wiederherstellbare Kompaktierungsanker",
+      "compactionAnchorsDesc": "Fügt Kompaktierungszusammenfassungen stabile Verweise hinzu, damit archivierte Gesprächsbelege später exakt geöffnet werden können.",
+      "nextCompactionBadge": "nächste Kompaktierung"
     },
     "privacy": {
       "title": "Datenschutz",

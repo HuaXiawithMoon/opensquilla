@@ -31,7 +31,7 @@ from opensquilla.engine.runtime_recovery import (
 from opensquilla.tools.write_policy import validate_workspace_write_deny_env
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from opensquilla.engine.agent import Agent, ToolHandler
     from opensquilla.engine.turn_runner.outcome import StageOutcome
@@ -425,6 +425,7 @@ class _AgentConfigAuxiliaries:
     source_diff_candidate_mode: Literal["off", "log", "warn_model"] | None
     runtime_state_capsule_mode: Literal["off", "log", "inject"] | None
     text_only_tool_recovery_mode: Literal["off", "log", "warn_model"] | None
+    compaction_anchor_enabled: bool = False
     # Gateway ``prompt.finalize_evidence_gate`` (env still overrides).
     finalize_evidence_gate: bool = False
 
@@ -635,6 +636,10 @@ class AgentBootstrapStageInput:
     run_kind: str = "agent"
     session_epoch: int = 0
     provider_request_correlation: ProviderRequestCorrelation | None = field(
+        default=None,
+        repr=False,
+    )
+    compaction_identity_provider: Callable[[], Awaitable[int | None]] | None = field(
         default=None,
         repr=False,
     )
@@ -862,6 +867,8 @@ class AgentBootstrapStage:
             flush_compaction_safety_mode=aux.flush_compaction_safety_mode,
             compaction_profile=aux.compaction_profile,
             compaction_protected_recent_messages=(aux.compaction_protected_recent_messages),
+            compaction_anchor_enabled=aux.compaction_anchor_enabled,
+            compaction_identity_provider=inp.compaction_identity_provider,
             flush_workspace_dir=aux.flush_workspace_dir,
             model_capabilities=catalog.capabilities,
             thinking=aux.thinking,

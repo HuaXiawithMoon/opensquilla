@@ -173,13 +173,13 @@ async def test_new_skips_when_only_cut_would_orphan_tool_result():
             "role": "assistant",
             "content": "calling tool",
             "tool_calls": [{"id": "call_1", "type": "function"}],
-            "token_count": 4,
+            "token_count": 14,
         },
         {
             "role": "tool",
             "content": "tool result",
             "tool_call_id": "call_1",
-            "token_count": 4,
+            "token_count": 8,
         },
         {"role": "user", "content": "q2", "token_count": 3},
         {"role": "assistant", "content": "answer", "token_count": 3},
@@ -187,7 +187,7 @@ async def test_new_skips_when_only_cut_would_orphan_tool_result():
     request = CompactionRequest(
         session_id="boundary-start-test",
         entries=entries,
-        context_window_tokens=26,
+        context_window_tokens=31,
         config=CompactionConfig(safety_margin=1.0),
     )
 

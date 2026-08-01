@@ -1370,7 +1370,10 @@
       "dataMaintenanceAria": "Open data maintenance",
       "runTraceLabel": "Run-trace drawer in Logs",
       "runTraceDesc": "Make log lines interactive and open a per-line node-step detail drawer in the Logs view.",
-      "runTraceAria": "Run-trace drawer in Logs (takes effect after reload)"
+      "runTraceAria": "Run-trace drawer in Logs (takes effect after reload)",
+      "compactionAnchorsLabel": "Recoverable compaction anchors",
+      "compactionAnchorsDesc": "Add stable references to compaction summaries so exact archived transcript evidence can be expanded later.",
+      "nextCompactionBadge": "next compaction"
     },
     "privacy": {
       "title": "Privacy",

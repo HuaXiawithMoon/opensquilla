@@ -152,6 +152,53 @@ def test_sessions_spawn_policy_keys_by_parent_session() -> None:
     assert policy.key == ("sessions_spawn", "agent:main:parent-a")
 
 
+def test_session_search_policy_keys_by_current_session() -> None:
+    policy = _get_tool_concurrency_policy(
+        "session_search",
+        {"query": "deployment port"},
+        parent_session_key="agent:main:parent-a",
+    )
+
+    assert policy.mode == "keyed"
+    assert policy.key == ("session_search", "agent:main:parent-a")
+    assert (
+        _get_tool_concurrency_policy("session_search", {"query": "x"}).mode
+        == "mutex"
+    )
+
+
+@pytest.mark.asyncio
+async def test_same_turn_session_search_calls_run_serially() -> None:
+    tool_calls = [
+        ("session_search", {"query": "deployment port"}),
+        ("session_search", {"query": "compaction decision"}),
+    ]
+    intervals: list[tuple[float, float]] = []
+
+    async def _handler(tc: ToolCall) -> ToolResult:
+        start = time.monotonic()
+        await asyncio.sleep(_TOOL_SLEEP_S)
+        intervals.append((start, time.monotonic()))
+        return ToolResult(
+            tool_use_id=tc.tool_use_id,
+            tool_name=tc.tool_name,
+            content="ok",
+        )
+
+    agent = Agent(
+        provider=_FixedToolCallArgsProvider(tool_calls),
+        config=AgentConfig(max_iterations=2),
+        tool_definitions=[_tool_def("session_search")],
+        tool_handler=_handler,
+    )
+
+    await _collect(agent)
+
+    assert len(intervals) == 2
+    (_, first_end), (second_start, _) = intervals
+    assert second_start >= first_end - 0.01
+
+
 @pytest.mark.asyncio
 async def test_image_analysis_calls_have_dedicated_inflight_cap() -> None:
     """Vision requests should not fan out at the generic safe-tool limit."""

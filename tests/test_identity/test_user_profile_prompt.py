@@ -91,6 +91,23 @@ def test_system_prompt_routes_exact_transcript_search_to_session_search() -> Non
     assert "debug" not in prompt.lower()
 
 
+def test_system_prompt_routes_session_search_without_memory_tools() -> None:
+    prompt = assemble_system_prompt(
+        AgentProfile(agent_id="main", prompt_mode="full"),
+        tools=["session_search"],
+    )
+
+    assert "## Session History Recall" in prompt
+    assert "Use `session_search` when exact prior chat wording" in prompt
+    assert "materially depends on a prior-chat decision" in prompt
+    assert "rather than reconstructing it from memory" in prompt
+    assert "not automatically as current truth" in prompt
+    assert "does not prove that the claim never existed" in prompt
+    assert "expand it with `session_search(anchor=" in prompt
+    assert "Use keyword query only when no suitable anchor is available" in prompt
+    assert "Ordinary recall should start with default curated `memory_search`" not in prompt
+
+
 def test_system_prompt_routes_agent_identity_away_from_memory_md() -> None:
     prompt = assemble_system_prompt(
         AgentProfile(agent_id="main", prompt_mode="full"),

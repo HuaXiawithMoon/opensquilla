@@ -160,6 +160,15 @@ def _add_obligation(
     )
 
 
+def _is_session_search_segment(call: Mapping[str, Any]) -> bool:
+    if call.get("retrieval_receipt"):
+        return True
+    if call.get("name") == "session_search":
+        return True
+    function = call.get("function")
+    return isinstance(function, Mapping) and function.get("name") == "session_search"
+
+
 def extract_compaction_obligations(
     entries: Sequence[Any],
     *,
@@ -276,6 +285,12 @@ def extract_compaction_obligations(
         if isinstance(tool_calls, Sequence) and not isinstance(tool_calls, (str, bytes)):
             for call in tool_calls:
                 if isinstance(call, Mapping):
+                    # session_search results are borrowed views over facts that
+                    # already live in the transcript archive. Treating their
+                    # receipts as new coverage obligations duplicates source
+                    # text and creates retrieval→compaction feedback loops.
+                    if _is_session_search_segment(call):
+                        continue
                     _add_obligation(
                         obligations,
                         seen,

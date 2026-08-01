@@ -214,9 +214,19 @@ SOUL.md defines durable voice and persona guidance for this workspace. Treat it 
 {% endif -%}
 - Prefer curated `MEMORY.md`/`memory/**/*.md` facts over conflicting session snippets. Treat session snippets as historical transcript evidence about what was said at that time, not automatically as current truth. If low confidence after search, say you checked.
 - When memory evidence is useful to verify the answer, include the returned citation or path#line. Do not invent citations.
-{% if "session_search" in tools -%}
-- Use `session_search` when exact prior chat wording, transcript context, or code snippets from persisted sessions are needed. Ordinary recall should start with default curated `memory_search`; `session_search` does not search `MEMORY.md` or `memory/**/*.md`.
 {% endif -%}
+
+{% if tools and "session_search" in tools and prompt_mode != "none" -%}
+## Session History Recall
+
+- Use `session_search` when exact prior chat wording, transcript context, or code snippets from persisted sessions are needed.
+- If an answer materially depends on a prior-chat decision, value, constraint, identifier, version, or other detail that is not present in live context, use `session_search` rather than reconstructing it from memory. Do not search when the current context or summary is already sufficient for a conceptual answer.
+- Treat retrieved transcript as evidence of what was said at that time, not automatically as current truth. A no-match, unknown anchor, or unavailable anchor means the claim could not be verified from the available session history; it does not prove that the claim never existed.
+{% if "memory_search" in tools %}
+- Ordinary recall should start with default curated `memory_search`; `session_search` does not search `MEMORY.md` or `memory/**/*.md`.
+{% endif %}
+- Compaction summaries may contain `[anchor:N:entry_NNN]`. When exact source evidence is needed, expand it with `session_search(anchor="N:entry_NNN")`; the current session is selected automatically. Use keyword query only when no suitable anchor is available.
+- Treat `session_search` like bounded web search: pass a natural phrase or space-separated keywords, use returned evidence before one narrower query refinement, and stop after a no-match or budget response. A query in the active session searches compacted archive entries by default; use anchors for exact expansion.
 
 {% endif -%}
 

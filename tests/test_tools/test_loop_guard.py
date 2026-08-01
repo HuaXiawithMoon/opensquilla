@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from opensquilla.result_budget import (
+    DEFAULT_TOOL_RUN_BUDGET_POLICY,
     DuplicateRetrievalInFlightError,
     TerminalRetrievalReplayError,
     ToolRunBudgetExceededError,
@@ -10,6 +11,16 @@ from opensquilla.result_budget import (
     ToolRunBudgetTracker,
     clamp_tool_arguments,
 )
+
+
+def test_default_session_search_budget_is_small_and_hard_bounded() -> None:
+    policy = DEFAULT_TOOL_RUN_BUDGET_POLICY
+
+    assert policy.max_session_search_calls_per_turn == 6
+    assert policy.max_session_search_query_calls_per_turn == 2
+    assert policy.max_session_search_anchor_calls_per_turn == 4
+    assert policy.max_session_search_chars_per_turn == 12_000
+    assert policy.max_session_search_chars_per_call == 4_000
 
 
 @pytest.mark.asyncio
@@ -112,6 +123,103 @@ def test_web_search_clamps_source_backed_arguments() -> None:
         "fetch_top_k": 2,
         "max_chars_per_source": 900,
     }
+
+
+def test_session_search_clamps_result_count_and_text_budget() -> None:
+    clamped = clamp_tool_arguments(
+        "session_search",
+        {"query": "compaction anchor", "limit": 100, "max_chars": 100_000},
+        ToolRunBudgetPolicy(
+            max_session_search_results=5,
+            max_session_search_chars_per_call=6_000,
+        ),
+    )
+
+    assert clamped == {
+        "query": "compaction anchor",
+        "limit": 5,
+        "max_chars": 6_000,
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_search_reordered_keywords_are_one_query_identity() -> None:
+    tracker = ToolRunBudgetTracker()
+    first = await tracker.reserve_tool_call(
+        tool_name="session_search",
+        arguments={"query": "  Compaction   Anchor  "},
+    )
+    await tracker.commit_tool_result(first, '{"results": []}')
+
+    with pytest.raises(ToolRunBudgetExceededError) as exc_info:
+        await tracker.reserve_tool_call(
+            tool_name="session_search",
+            arguments={"query": "anchor compaction"},
+        )
+
+    assert exc_info.value.tool_name == "session_search"
+    assert "repeated query or anchor" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_session_search_query_calls_have_a_separate_turn_cap() -> None:
+    tracker = ToolRunBudgetTracker(
+        ToolRunBudgetPolicy(
+            max_session_search_calls_per_turn=8,
+            max_session_search_query_calls_per_turn=2,
+            max_session_search_chars_per_turn=20_000,
+        )
+    )
+    for query in ("first evidence", "second evidence"):
+        reservation = await tracker.reserve_tool_call(
+            tool_name="session_search",
+            arguments={"query": query},
+        )
+        await tracker.commit_tool_result(reservation, '{"results": []}')
+
+    with pytest.raises(ToolRunBudgetExceededError):
+        await tracker.reserve_tool_call(
+            tool_name="session_search",
+            arguments={"query": "third evidence"},
+        )
+
+    snapshot = await tracker.snapshot()
+    assert snapshot["session_search_calls_used"] == 2
+    assert snapshot["session_search_query_calls_used"] == 2
+    assert snapshot["session_search_anchor_calls_used"] == 0
+
+
+@pytest.mark.asyncio
+async def test_session_search_aggregate_text_budget_clamps_later_calls() -> None:
+    tracker = ToolRunBudgetTracker(
+        ToolRunBudgetPolicy(
+            max_session_search_chars_per_turn=7_000,
+            max_session_search_chars_per_call=6_000,
+        )
+    )
+    first = await tracker.reserve_tool_call(
+        tool_name="session_search",
+        arguments={"query": "first"},
+    )
+    assert first.arguments["max_chars"] == 6_000
+    await tracker.commit_tool_result(first, "x" * 5_000)
+
+    second = await tracker.reserve_tool_call(
+        tool_name="session_search",
+        arguments={"query": "second"},
+    )
+    assert second.arguments["max_chars"] == 2_000
+    await tracker.commit_tool_result(second, "x" * 2_000)
+
+    with pytest.raises(ToolRunBudgetExceededError):
+        await tracker.reserve_tool_call(
+            tool_name="session_search",
+            arguments={"query": "third"},
+        )
+
+    snapshot = await tracker.snapshot()
+    assert snapshot["session_search_chars_used"] == 7_000
+    assert snapshot["session_search_chars_reserved"] == 0
 
 
 @pytest.mark.asyncio

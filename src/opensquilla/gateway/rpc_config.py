@@ -596,6 +596,7 @@ _SAFE_WRITE_PATCH_PATHS = frozenset(
         "squilla_router.self_learning.enabled",
         "memory.dream.enabled",
         "memory.dream.auto_schedule",
+        "compaction.anchor_enabled",
     }
 )
 

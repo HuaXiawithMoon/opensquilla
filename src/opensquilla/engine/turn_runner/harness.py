@@ -585,6 +585,11 @@ class _TurnRunnerAgentConfigBuilderAdapter(AgentConfigBuilderPort):
                 "protected_recent_messages",
                 0,
             ),
+            compaction_anchor_enabled=getattr(
+                compaction_cfg,
+                "anchor_enabled",
+                False,
+            ),
             tool_result_projection_max_inline_chars=getattr(
                 agent_token_cfg,
                 "tool_result_projection_max_inline_chars",
@@ -961,6 +966,10 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
         summary: str,
         kept_entries: list[Any],
         compaction_id: str | None = None,
+        removed_count: int | None = None,
+        removed_entries: list[Any] | None = None,
+        compaction_index: int | None = None,
+        anchor_enabled: bool = False,
     ) -> None:
         from opensquilla.engine.cache_break_monitor import notify_compaction
         from opensquilla.session.compaction_lifecycle import (
@@ -975,15 +984,21 @@ class _TurnRunnerCompactionPersistAdapter(CompactionPersistPort):
             return
         persist_method = session_manager.persist_compaction_result
         params = inspect.signature(persist_method).parameters
+        accepts_kwargs = any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+        )
         persist_kwargs: dict[str, Any] = {}
-        if "compaction_id" in params or any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-        ):
-            persist_kwargs["compaction_id"] = compaction_id
-        if "trigger_reason" in params or any(
-            p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
-        ):
-            persist_kwargs["trigger_reason"] = "agent_inline_overflow"
+        forwarded = {
+            "compaction_id": compaction_id,
+            "trigger_reason": "agent_inline_overflow",
+            "removed_count": removed_count,
+            "removed_entries": removed_entries,
+            "compaction_index": compaction_index,
+            "anchor_enabled": anchor_enabled,
+        }
+        for name, value in forwarded.items():
+            if value is not None and (name in params or accepts_kwargs):
+                persist_kwargs[name] = value
         async with self._runner._session_write_context(session_key):
             await persist_method(
                 session_key,

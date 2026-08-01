@@ -1370,7 +1370,10 @@
       "dataMaintenanceAria": "Ouvrir la maintenance des données",
       "runTraceLabel": "Tiroir de trace d'exécution dans les Journaux",
       "runTraceDesc": "Rend les lignes de journal interactives et ouvre un tiroir de détail par étape de nœud dans la vue Journaux.",
-      "runTraceAria": "Tiroir de trace d'exécution dans les Journaux (prend effet après rechargement)"
+      "runTraceAria": "Tiroir de trace d'exécution dans les Journaux (prend effet après rechargement)",
+      "compactionAnchorsLabel": "Ancres de compactage récupérables",
+      "compactionAnchorsDesc": "Ajoute des références stables aux résumés de compactage afin de pouvoir développer ensuite les preuves archivées exactes.",
+      "nextCompactionBadge": "prochain compactage"
     },
     "privacy": {
       "title": "Confidentialité",

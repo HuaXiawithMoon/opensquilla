@@ -23,7 +23,10 @@ from opensquilla.engine import (
     ToolResult,
     WarningEvent,
 )
-from opensquilla.engine.agent import _progress_watchdog_guidance_message
+from opensquilla.engine.agent import (
+    _progress_watchdog_guidance_message,
+    _project_content_blocks_for_compaction,
+)
 from opensquilla.engine.runtime import TurnRunner
 from opensquilla.engine.session_sanitize import session_payload_chars
 from opensquilla.provider import (
@@ -62,6 +65,62 @@ RAW_CURRENT_TURN_OVERFLOW_MESSAGE = (
     "Context overflow is in the current turn's recent tool calls or "
     "reasoning tail; history compaction cannot reduce it."
 )
+
+
+def test_live_session_search_result_projects_to_pointer_only_compaction_receipt() -> None:
+    raw_result = json.dumps(
+        {
+            "result_count": 1,
+            "results": [
+                {
+                    "anchor": "3:entry_007",
+                    "snippet": "BORROWED_SOURCE_TEXT_MUST_NOT_BE_RECOMPACTED",
+                }
+            ],
+        }
+    )
+
+    flat, refs, receipt_only = _project_content_blocks_for_compaction(
+        [
+            ContentBlockToolResult(
+                tool_use_id="call-search",
+                content=raw_result,
+            )
+        ],
+        tool_names_by_id={"call-search": "session_search"},
+    )
+
+    assert "3:entry_007" in flat
+    assert "BORROWED_SOURCE_TEXT_MUST_NOT_BE_RECOMPACTED" not in flat
+    assert refs == ["3:entry_007"]
+    assert receipt_only is True
+
+    entries = Agent._message_count_compaction_entries(
+        [
+            Message(
+                role="assistant",
+                content=[
+                    ContentBlockToolUse(
+                        id="call-search",
+                        name="session_search",
+                        input={"query": "deployment port"},
+                    )
+                ],
+            ),
+            Message(
+                role="user",
+                content=[
+                    ContentBlockToolResult(
+                        tool_use_id="call-search",
+                        content=raw_result,
+                    )
+                ],
+            ),
+        ]
+    )
+    assert entries[1]["session_search_refs"] == ["3:entry_007"]
+    assert entries[1]["session_search_receipt_only"] is True
+    assert "BORROWED_SOURCE_TEXT_MUST_NOT_BE_RECOMPACTED" not in entries[1]["content"]
 
 
 class _StallingProvider:

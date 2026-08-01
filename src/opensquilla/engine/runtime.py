@@ -373,7 +373,6 @@ _SAFE_TOOL_NAMES: frozenset[str] = frozenset(
         "pdf",
         "read_file",
         "read_spreadsheet",
-        "session_search",
         "session_status",
         "sessions_history",
         "sessions_list",
@@ -415,6 +414,13 @@ def _get_tool_concurrency_policy(
 ) -> _ToolConcurrencyPolicy:
     if tool_name == "image":
         return _IMAGE_ANALYSIS_TOOL_POLICY
+    if tool_name == "session_search":
+        if parent_session_key:
+            return _ToolConcurrencyPolicy(
+                mode="keyed",
+                key=("session_search", parent_session_key),
+            )
+        return _MUTEX_TOOL_POLICY
     if tool_name in _SAFE_TOOL_NAMES:
         return _CONCURRENT_TOOL_POLICY
     if tool_name == "sessions_send":
@@ -1122,6 +1128,63 @@ def _persisted_tool_result_segment(
     }
     if event.execution_status is not None:
         segment["execution_status"] = normalize_execution_status(event.execution_status)
+
+    if event.tool_name == "session_search":
+        receipt: dict[str, Any] = {
+            "kind": "session_search_receipt",
+            "result_count": 0,
+            "refs": [],
+        }
+        try:
+            parsed_session_search = json.loads(result)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            receipt["error"] = "unparseable_session_search_result"
+        else:
+            if isinstance(parsed_session_search, dict):
+                for key, limit in (
+                    ("query", 256),
+                    ("anchor", 128),
+                    ("anchor_resolution", 64),
+                    ("searched_scope", 64),
+                ):
+                    value = parsed_session_search.get(key)
+                    if isinstance(value, str):
+                        receipt[key] = _truncate_json_string(value, limit)
+                for key in (
+                    "result_count",
+                    "result_truncated",
+                ):
+                    value = parsed_session_search.get(key)
+                    if isinstance(value, (bool, int)):
+                        receipt[key] = value
+                refs: list[dict[str, Any]] = []
+                for raw in parsed_session_search.get("results") or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    ref: dict[str, Any] = {}
+                    for key, limit in (
+                        ("ref", 256),
+                        ("anchor", 128),
+                        ("message_id", 128),
+                        ("role", 32),
+                        ("source", 32),
+                    ):
+                        value = raw.get(key)
+                        if isinstance(value, str):
+                            ref[key] = _truncate_json_string(value, limit)
+                    created_at = raw.get("created_at")
+                    if isinstance(created_at, int) and not isinstance(
+                        created_at, bool
+                    ):
+                        ref["created_at"] = created_at
+                    if ref:
+                        refs.append(ref)
+                    if len(refs) >= 12:
+                        break
+                receipt["refs"] = refs
+        segment["retrieval_receipt"] = True
+        segment["result"] = json.dumps(receipt, ensure_ascii=False, separators=(",", ":"))
+        return segment
 
     parsed_result: Any = None
     parsed_result_available = False
@@ -3539,6 +3602,20 @@ class TurnRunner:
                 input_mode=input_mode,
                 turn_metadata=turn.metadata,
             )
+
+            async def _next_inline_compaction_index() -> int | None:
+                if self._session_manager is None:
+                    return None
+                get_index = getattr(
+                    self._session_manager,
+                    "get_next_compaction_index",
+                    None,
+                )
+                if not callable(get_index):
+                    return None
+                allocated = await get_index(session_key)
+                return None if allocated is None else int(allocated)
+
             ab_outcome = await self._agent_bootstrap_stage.run(
                 AgentBootstrapStageInput(
                     provider=provider,
@@ -3566,6 +3643,7 @@ class TurnRunner:
                     run_kind=run_kind,
                     session_epoch=self._usage_session_epoch_by_key.get(session_key, 0),
                     provider_request_correlation=provider_request_correlation,
+                    compaction_identity_provider=_next_inline_compaction_index,
                 )
             )
             ab_out = ab_outcome.require_output()

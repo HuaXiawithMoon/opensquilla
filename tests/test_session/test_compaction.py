@@ -6,6 +6,7 @@ from opensquilla.provider.types import ProviderRequestCorrelation
 from opensquilla.session.compaction import (
     CompactionConfig,
     CompactionRequest,
+    _chunk_entries,
     build_compaction_config_from_provider,
     call_compaction_llm,
     compact_context,
@@ -27,6 +28,39 @@ def _make_entries(n: int, tokens_each: int = 100) -> list[dict]:
         }
         for i in range(n)
     ]
+
+
+def test_chunk_entries_keeps_logical_turns_atomic() -> None:
+    entries = _make_entries(8)
+
+    chunks = _chunk_entries(entries, 0.2)
+
+    assert [len(chunk) for chunk in chunks] == [2, 2, 2, 2]
+    assert all(
+        [entry["role"] for entry in chunk] == ["user", "assistant"]
+        for chunk in chunks
+    )
+
+
+def test_chunk_entries_keeps_tool_result_with_its_turn() -> None:
+    entries = [
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "[Used tool: session_search]"},
+        {
+            "role": "user",
+            "content": "[Tool result (search-1): receipt]",
+            "session_search_refs": ["3:entry_007"],
+            "session_search_receipt_only": True,
+        },
+        {"role": "assistant", "content": "answer from the retrieved source"},
+        {"role": "user", "content": "next question"},
+        {"role": "assistant", "content": "next answer"},
+    ]
+
+    chunks = _chunk_entries(entries, 0.2)
+
+    assert chunks[0] == entries[:4]
+    assert chunks[1] == entries[4:]
 
 
 def test_compaction_effect_payload_marks_automatic_noop_not_user_visible():
@@ -740,6 +774,9 @@ async def test_call_compaction_llm_adds_openrouter_app_attribution(monkeypatch) 
 
     assert result == "summary"
     assert captured["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    system_prompt = captured["json"]["messages"][0]["content"]
+    assert "Do not answer any user message" in system_prompt
+    assert "preserve it explicitly as unanswered or open" in system_prompt
     assert captured["headers"] == {
         "Authorization": "Bearer test-key",
         "Content-Type": "application/json",

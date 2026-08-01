@@ -1920,25 +1920,118 @@ def _artifact_event_kwargs(payload: dict[str, Any]) -> dict[str, Any]:
     return kwargs
 
 
-def _flatten_content_blocks(blocks: list[Any]) -> str:
+def _session_search_receipt_for_compaction(content: Any) -> tuple[str, list[str]]:
+    """Project live session-search output to bounded source refs for compaction."""
+    if isinstance(content, str):
+        raw = content
+    else:
+        try:
+            raw = json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            raw = ""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return (
+            "[session_search retrieval receipt: unparseable result; "
+            "retrieved text omitted]",
+            [],
+        )
+
+    refs: list[str] = []
+    seen: set[str] = set()
+    candidates: Any = []
+    result_count = 0
+    if isinstance(payload, dict):
+        candidates = payload.get("refs") or payload.get("results") or []
+        raw_count = payload.get("result_count")
+        if isinstance(raw_count, int) and not isinstance(raw_count, bool):
+            result_count = raw_count
+    if isinstance(candidates, list):
+        for item in candidates:
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("anchor") or item.get("ref") or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+            if len(refs) >= 12:
+                break
+        if not result_count:
+            result_count = len(candidates)
+    return (
+        "[session_search retrieval receipt: "
+        f"result_count={result_count} refs={refs!r}; retrieved text omitted]",
+        refs,
+    )
+
+
+def _tool_names_by_use_id(messages: list[Message]) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for message in messages:
+        if not isinstance(message.content, list):
+            continue
+        for block in message.content:
+            if isinstance(block, ContentBlockToolUse):
+                names[block.id] = block.name
+    return names
+
+
+def _project_content_blocks_for_compaction(
+    blocks: list[Any],
+    *,
+    tool_names_by_id: Mapping[str, str] | None = None,
+) -> tuple[str, list[str], bool]:
+    parts: list[str] = []
+    refs: list[str] = []
+    saw_receipt = False
+    saw_non_receipt = False
+    names = tool_names_by_id or {}
+    for block in blocks:
+        if isinstance(block, ContentBlockText):
+            parts.append(block.text)
+            saw_non_receipt = saw_non_receipt or bool(block.text.strip())
+        elif isinstance(block, ContentBlockToolUse):
+            parts.append(f"[Used tool: {block.name}]")
+            saw_non_receipt = True
+        elif isinstance(block, ContentBlockToolResult):
+            if names.get(block.tool_use_id) == "session_search":
+                marker, block_refs = _session_search_receipt_for_compaction(
+                    block.content
+                )
+                parts.append(f"[Tool result ({block.tool_use_id}): {marker}]")
+                saw_receipt = True
+                for ref in block_refs:
+                    if ref not in refs:
+                        refs.append(ref)
+                continue
+            snippet = (
+                block.content
+                if isinstance(block.content, str)
+                else str(block.content)
+            )
+            if len(snippet) > 200:
+                snippet = snippet[:200] + "…"
+            parts.append(f"[Tool result ({block.tool_use_id}): {snippet}]")
+            saw_non_receipt = True
+        # Skip thinking / image blocks — not useful for compaction.
+    return "\n".join(parts), refs, bool(saw_receipt and not saw_non_receipt)
+
+
+def _flatten_content_blocks(
+    blocks: list[Any],
+    *,
+    tool_names_by_id: Mapping[str, str] | None = None,
+) -> str:
     """Convert a list of content-block Pydantic models to a plain string for compaction.
 
     Extracts text from ContentBlockText, summarises tool_use/tool_result blocks,
     and drops thinking/image blocks to avoid leaking Python repr strings.
     """
-    parts: list[str] = []
-    for b in blocks:
-        if isinstance(b, ContentBlockText):
-            parts.append(b.text)
-        elif isinstance(b, ContentBlockToolUse):
-            parts.append(f"[Used tool: {b.name}]")
-        elif isinstance(b, ContentBlockToolResult):
-            snippet = b.content if isinstance(b.content, str) else str(b.content)
-            if len(snippet) > 200:
-                snippet = snippet[:200] + "…"
-            parts.append(f"[Tool result ({b.tool_use_id}): {snippet}]")
-        # Skip thinking / image blocks — not useful for compaction
-    return "\n".join(parts)
+    return _project_content_blocks_for_compaction(
+        blocks,
+        tool_names_by_id=tool_names_by_id,
+    )[0]
 
 
 def _message_has_tool_result(message: Message | None) -> bool:
@@ -8279,6 +8372,9 @@ class Agent:
                                 kept_entries=overflow_outcome.kept_entries,
                                 kept_count=len(overflow_outcome.messages),
                                 removed_count=overflow_outcome.removed_count,
+                                removed_entries=overflow_outcome.removed_entries,
+                                compaction_index=overflow_outcome.compaction_index,
+                                anchor_enabled=overflow_outcome.anchor_enabled,
                             )
                             _call_attempt += 1
                             continue
@@ -8476,6 +8572,9 @@ class Agent:
                         kept_entries=overflow_outcome.kept_entries,
                         kept_count=len(overflow_outcome.messages),
                         removed_count=overflow_outcome.removed_count,
+                        removed_entries=overflow_outcome.removed_entries,
+                        compaction_index=overflow_outcome.compaction_index,
+                        anchor_enabled=overflow_outcome.anchor_enabled,
                     )
                     overflow_retries = 0  # reset on success
                     # Rebuild chat_cfg so next LLM call uses refreshed system
@@ -13748,22 +13847,33 @@ class Agent:
     @staticmethod
     def _message_count_compaction_entries(messages: list[Message]) -> list[dict[str, Any]]:
         entries: list[dict[str, Any]] = []
+        tool_names_by_id = _tool_names_by_use_id(messages)
         for message in messages:
+            session_search_refs: list[str] = []
+            receipt_only = False
             if isinstance(message.content, str):
                 flat = message.content
                 real_tokens = get_approx_tokens(message.content)
             else:
-                flat = _flatten_content_blocks(message.content)
+                flat, session_search_refs, receipt_only = (
+                    _project_content_blocks_for_compaction(
+                        message.content,
+                        tool_names_by_id=tool_names_by_id,
+                    )
+                )
                 real_tokens = get_approx_tokens(
                     json.dumps(Agent._live_request_jsonable(message.content))
                 )
-            entries.append(
-                {
-                    "role": message.role,
-                    "content": flat,
-                    "token_count": real_tokens,
-                }
-            )
+            entry: dict[str, Any] = {
+                "role": message.role,
+                "content": flat,
+                "token_count": real_tokens,
+            }
+            if session_search_refs:
+                entry["session_search_refs"] = session_search_refs
+            if receipt_only:
+                entry["session_search_receipt_only"] = True
+            entries.append(entry)
         return entries
 
     async def _recover_provider_message_count_limit(
@@ -13857,6 +13967,8 @@ class Agent:
             return None, "no_safe_cut"
 
         compaction_config = self._build_compaction_config()
+        # This request-only projection emits no durable CompactionEvent.
+        compaction_config.anchor_enabled = False
         protected_tail_count = len(messages) - protected_start
         compaction_config.protected_recent_messages = max(
             int(compaction_config.protected_recent_messages or 0),
@@ -14181,6 +14293,7 @@ class Agent:
         )
         config.compaction_profile = self.config.compaction_profile
         config.protected_recent_messages = self.config.compaction_protected_recent_messages
+        config.anchor_enabled = self.config.compaction_anchor_enabled
         return config
 
     @staticmethod
@@ -14413,28 +14526,59 @@ class Agent:
         # compactor's estimator (which prefers a persisted token_count) measure
         # the true replay size.
         entries = []
+        tool_names_by_id = _tool_names_by_use_id(messages)
         for m in messages:
+            session_search_refs: list[str] = []
+            receipt_only = False
             if isinstance(m.content, str):
                 flat = m.content
                 real_tokens = get_approx_tokens(m.content)
             else:
-                flat = _flatten_content_blocks(m.content)
+                flat, session_search_refs, receipt_only = (
+                    _project_content_blocks_for_compaction(
+                        m.content,
+                        tool_names_by_id=tool_names_by_id,
+                    )
+                )
                 real_tokens = get_approx_tokens(
                     json.dumps(Agent._live_request_jsonable(m.content))
                 )
-            entries.append(
-                {
-                    "role": m.role,
-                    "content": flat,
-                    "token_count": real_tokens,
-                }
-            )
+            entry: dict[str, Any] = {
+                "role": m.role,
+                "content": flat,
+                "token_count": real_tokens,
+            }
+            if session_search_refs:
+                entry["session_search_refs"] = session_search_refs
+            if receipt_only:
+                entry["session_search_receipt_only"] = True
+            entries.append(entry)
+
+        compaction_config = self._build_compaction_config()
+        compaction_index: int | None = None
+        if compaction_config.anchor_enabled:
+            identity_provider = self.config.compaction_identity_provider
+            if identity_provider is not None:
+                try:
+                    compaction_index = await identity_provider()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "compaction.anchor_identity_unavailable",
+                        error=str(exc),
+                    )
+            if compaction_index is None:
+                logger.warning(
+                    "compaction.anchor_identity_unavailable",
+                    reason="missing_identity_provider",
+                )
+                compaction_config.anchor_enabled = False
 
         request = CompactionRequest(
             session_id="agent-turn",
             entries=entries,
             context_window_tokens=window_tokens,
-            config=self._build_compaction_config(),
+            config=compaction_config,
+            compaction_index=compaction_index,
             provider_request_correlation=derive_provider_request_correlation(
                 self._provider_request_correlation,
                 execution_id=uuid.uuid4().hex,
@@ -14621,7 +14765,16 @@ class Agent:
             summary=result.summary,
             kept_entries=kept_entries,
             removed_count=result.removed_count,
+            removed_entries=[
+                {
+                    "role": entry["role"],
+                    "content": entry["content"],
+                }
+                for entry in entries[: result.removed_count]
+            ],
             compaction_id=compaction_id,
+            compaction_index=compaction_index,
+            anchor_enabled=compaction_config.anchor_enabled,
             request_context_insert_index=adjusted_request_idx,
             runtime_context_insert_index=adjusted_runtime_idx,
             protected_turn_start_index=adjusted_protected_idx,

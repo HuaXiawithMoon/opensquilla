@@ -8,6 +8,7 @@ afterEach(() => {
   while (mounted.length) mounted.pop()!.unmount()
   document.body.innerHTML = ''
   localStorage.clear()
+  vi.doUnmock('@/components/settings/CompactionContinuityGroup.vue')
   vi.doUnmock('@/components/settings/MemoryLearningGroup.vue')
 })
 
@@ -15,6 +16,9 @@ describe('SettingsAdvancedPanel data maintenance entry', () => {
   it('keeps maintenance low in Advanced and emits navigation only after activation', async () => {
     vi.resetModules()
     vi.doMock('@/components/settings/MemoryLearningGroup.vue', () => ({
+      default: { template: '<div />' },
+    }))
+    vi.doMock('@/components/settings/CompactionContinuityGroup.vue', () => ({
       default: { template: '<div />' },
     }))
     const { createApp, nextTick } = await import('vue')

@@ -1370,7 +1370,10 @@
       "dataMaintenanceAria": "データメンテナンスを開く",
       "runTraceLabel": "ログの実行トレースドロワー",
       "runTraceDesc": "ログ行を操作可能にし、ログビューで行ごとのノードステップ詳細ドロワーを開きます。",
-      "runTraceAria": "ログの実行トレースドロワー（再読み込み後に有効）"
+      "runTraceAria": "ログの実行トレースドロワー（再読み込み後に有効）",
+      "compactionAnchorsLabel": "復元可能なコンパクションアンカー",
+      "compactionAnchorsDesc": "コンパクション要約に安定した参照を追加し、アーカイブ済みの正確な会話証拠を後から展開できるようにします。",
+      "nextCompactionBadge": "次回の圧縮"
     },
     "privacy": {
       "title": "プライバシー",

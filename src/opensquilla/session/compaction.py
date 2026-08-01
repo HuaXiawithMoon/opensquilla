@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import inspect
 import json
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -28,6 +29,61 @@ if TYPE_CHECKING:
 
 log = structlog.get_logger(__name__)
 
+_ANCHOR_INSTRUCTION = (
+    "\n\nThe conversation entries above are labeled [entry_NNN | role]. "
+    "When your summary references a specific user or assistant statement or decision "
+    "whose exact original wording might matter later, append an anchor:\n"
+    "  [anchor:{compaction_index}:entry_NNN]\n"
+    "Use anchors sparingly. Do not anchor every entry, do not invent entry numbers, "
+    "and do not mint a new anchor for a session_search retrieval receipt or for a "
+    "restatement derived from retrieved text. Reuse the canonical source anchors "
+    "listed by that receipt. A derived response may receive a new anchor only for a "
+    "genuinely new conclusion or decision that is not already present in its sources."
+)
+_ANCHOR_PATTERN = re.compile(
+    r"\[anchor:(?P<compaction_index>\d+):(?P<entry_anchor_id>entry_\d+)\]"
+)
+
+
+def extract_anchors_from_summary(summary_text: str) -> list[dict[str, Any]]:
+    """Return unique compaction anchors declared in a summary."""
+    seen: set[tuple[int, str]] = set()
+    anchors: list[dict[str, Any]] = []
+    for match in _ANCHOR_PATTERN.finditer(summary_text):
+        key = (
+            int(match.group("compaction_index")),
+            match.group("entry_anchor_id"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        anchors.append(
+            {"compaction_index": key[0], "entry_anchor_id": key[1]}
+        )
+    return anchors
+
+
+def _sanitize_current_compaction_anchors(
+    summary_text: str,
+    *,
+    compaction_index: int,
+    removed_count: int,
+) -> tuple[str, int]:
+    """Remove invented current-epoch anchors while preserving older epochs."""
+    removed = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal removed
+        if int(match.group("compaction_index")) != compaction_index:
+            return match.group(0)
+        entry_index = int(match.group("entry_anchor_id").removeprefix("entry_"))
+        if 0 <= entry_index < removed_count:
+            return match.group(0)
+        removed += 1
+        return ""
+
+    return _ANCHOR_PATTERN.sub(replace, summary_text), removed
+
 _COMPACTION_TIMEOUT = 90.0
 _MAX_CUSTOM_INSTRUCTIONS_CHARS = 2000
 CompactionProfile = Literal["conversation", "coding", "research", "support"]
@@ -49,6 +105,7 @@ class CompactionConfig:
     coverage_blocking: bool = False
     compaction_profile: CompactionProfile = "conversation"
     protected_recent_messages: int = 0
+    anchor_enabled: bool = False
 
 
 @dataclass
@@ -65,6 +122,7 @@ class CompactionRequest:
     forced_prefix_cut: int | None = None
     trigger: CompactionTrigger = "token_budget"
     reason: str | None = None
+    compaction_index: int | None = None
     provider_request_correlation: ProviderRequestCorrelation | None = field(
         default=None,
         repr=False,
@@ -122,6 +180,7 @@ def build_compaction_config_from_provider(
     for attr in (
         "compaction_profile",
         "protected_recent_messages",
+        "anchor_enabled",
     ):
         if compaction_config is not None and hasattr(compaction_config, attr):
             setattr(cfg, attr, getattr(compaction_config, attr))
@@ -408,11 +467,48 @@ def _compaction_quality_report(
 
 
 def _chunk_entries(entries: list[dict[str, Any]], chunk_ratio: float) -> list[list[dict[str, Any]]]:
-    """Split entries into chunks based on ratio of total entries."""
+    """Pack whole logical turns into approximately ratio-sized chunks.
+
+    A provider-side tool result has role ``user`` on the wire, and consecutive
+    user-side context messages may precede one assistant response. Therefore a
+    turn starts only when a real user entry follows an assistant entry. Keeping
+    that unit atomic prevents the summarizer from seeing an unanswered user
+    message in one chunk and its answer in another.
+    """
     if not entries:
         return []
-    chunk_size = max(1, int(len(entries) * chunk_ratio))
-    return [entries[i : i + chunk_size] for i in range(0, len(entries), chunk_size)]
+    target_size = max(1, int(len(entries) * chunk_ratio))
+
+    turns: list[list[dict[str, Any]]] = []
+    current_turn: list[dict[str, Any]] = []
+    current_has_assistant = False
+    for entry in entries:
+        starts_next_turn = bool(
+            current_turn
+            and current_has_assistant
+            and entry.get("role") == "user"
+            and not _is_tool_result_entry(entry)
+            and not _is_pure_session_search_receipt_entry(entry)
+        )
+        if starts_next_turn:
+            turns.append(current_turn)
+            current_turn = []
+            current_has_assistant = False
+        current_turn.append(entry)
+        current_has_assistant = current_has_assistant or entry.get("role") == "assistant"
+    if current_turn:
+        turns.append(current_turn)
+
+    chunks: list[list[dict[str, Any]]] = []
+    current_chunk: list[dict[str, Any]] = []
+    for turn in turns:
+        if current_chunk and len(current_chunk) + len(turn) > target_size:
+            chunks.append(current_chunk)
+            current_chunk = []
+        current_chunk.extend(turn)
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks
 
 
 def _build_strict_identifier_instruction() -> str:
@@ -515,6 +611,23 @@ def _summarize_tool_calls_for_llm(tool_calls: Any) -> str:
         if seg_type == "tool_result":
             result = segment.get("result", "")
             rendered = result if isinstance(result, str) else _json_text(result)
+            if segment.get("retrieval_receipt") or segment.get("name") == "session_search":
+                try:
+                    receipt = json.loads(rendered)
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    receipt = {}
+                refs = receipt.get("refs") if isinstance(receipt, dict) else []
+                canonical_refs = [
+                    str(item.get("anchor") or item.get("ref"))
+                    for item in (refs or [])
+                    if isinstance(item, dict) and (item.get("anchor") or item.get("ref"))
+                ]
+                lines.append(
+                    "- session_search retrieval receipt: "
+                    f"result_count={receipt.get('result_count', 0)} "
+                    f"refs={canonical_refs[:12]!r}; retrieved text omitted"
+                )
+                continue
             digest = hashlib.sha256(rendered.encode("utf-8")).hexdigest()[:16]
             lines.append(
                 "- tool_result "
@@ -532,13 +645,100 @@ def _summarize_tool_calls_for_llm(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
-def _format_chunk_for_llm(chunk: list[dict[str, Any]]) -> str:
-    """Format conversation entries into readable text for the compaction LLM."""
+def _session_search_source_refs(entry: dict[str, Any]) -> list[str]:
+    """Return canonical source refs already carried by a retrieval receipt."""
+    refs: list[str] = []
+    seen: set[str] = set()
+
+    explicit_refs = entry.get("session_search_refs")
+    if isinstance(explicit_refs, list):
+        for raw_ref in explicit_refs:
+            ref = str(raw_ref or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+
+    tool_calls = entry.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return refs[:12]
+    for segment in tool_calls:
+        if not isinstance(segment, dict):
+            continue
+        if not (
+            segment.get("retrieval_receipt")
+            or segment.get("name") == "session_search"
+        ):
+            continue
+        result = segment.get("result", "")
+        try:
+            receipt = json.loads(result) if isinstance(result, str) else result
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        for item in receipt.get("refs") or []:
+            if not isinstance(item, dict):
+                continue
+            ref = str(item.get("anchor") or item.get("ref") or "").strip()
+            if ref and ref not in seen:
+                seen.add(ref)
+                refs.append(ref)
+            if len(refs) >= 12:
+                return refs
+    return refs
+
+
+def _is_pure_session_search_receipt_entry(entry: dict[str, Any]) -> bool:
+    """Whether an entry is only a carrier for borrowed session-search evidence."""
+    if entry.get("session_search_receipt_only") is True:
+        return True
+    if str(entry.get("content") or "").strip():
+        return False
+    tool_calls = entry.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        return False
+    for segment in tool_calls:
+        if not isinstance(segment, dict):
+            return False
+        if segment.get("retrieval_receipt") or segment.get("name") == "session_search":
+            continue
+        function = segment.get("function")
+        if isinstance(function, dict) and function.get("name") == "session_search":
+            continue
+        return False
+    return True
+
+
+def _format_chunk_for_llm(
+    chunk: list[dict[str, Any]],
+    *,
+    anchor_base: int = 0,
+    include_anchors: bool = False,
+) -> str:
+    """Format entries, optionally with stable labels for exact recovery."""
     lines: list[str] = []
-    for entry in chunk:
+    active_source_refs: list[str] = []
+    for index, entry in enumerate(chunk):
         role = entry.get("role", "unknown")
         content = _summarize_if_envelope(str(entry.get("content") or ""))
-        rendered_parts = [f"[{role}]: {content}"]
+        is_receipt_only = _is_pure_session_search_receipt_entry(entry)
+        if role == "user" and not _is_tool_result_entry(entry) and not is_receipt_only:
+            active_source_refs = []
+        entry_source_refs = _session_search_source_refs(entry)
+        if entry_source_refs:
+            active_source_refs = entry_source_refs
+        if include_anchors and _is_pure_session_search_receipt_entry(entry):
+            header = f"[session_search receipt | {role}]"
+        elif include_anchors:
+            header = f"[entry_{anchor_base + index:03d} | {role}]"
+        else:
+            header = f"[{role}]"
+        rendered_parts = [f"{header}: {content}"]
+        if role == "assistant" and content and active_source_refs:
+            rendered_parts.append(
+                "[derived from session_search refs: "
+                f"{active_source_refs!r}; borrowed facts remain owned by these sources]"
+            )
         tool_summary = _summarize_tool_calls_for_llm(entry.get("tool_calls"))
         if tool_summary:
             rendered_parts.append(tool_summary)
@@ -552,17 +752,45 @@ def _format_chunk_for_llm(chunk: list[dict[str, Any]]) -> str:
     return "\n\n".join(lines)
 
 
-def _summarize_chunk_fallback(chunk: list[dict[str, Any]], policy: str) -> str:
+def _summarize_chunk_fallback(
+    chunk: list[dict[str, Any]],
+    policy: str,
+    *,
+    compaction_index: int | None = None,
+    anchor_base: int = 0,
+) -> str:
     """Fallback summary when LLM call fails."""
     lines: list[str] = []
     if policy == "strict":
         lines.append(_build_strict_identifier_instruction())
     lines.append(f"[Summary of {len(chunk)} messages]")
-    for entry in chunk:
+    active_source_refs: list[str] = []
+    for offset, entry in enumerate(chunk):
         role = entry.get("role", "unknown")
         content = _summarize_if_envelope(str(entry.get("content") or ""))
+        is_receipt_only = _is_pure_session_search_receipt_entry(entry)
+        if role == "user" and not _is_tool_result_entry(entry) and not is_receipt_only:
+            active_source_refs = []
+        entry_source_refs = _session_search_source_refs(entry)
+        if entry_source_refs:
+            active_source_refs = entry_source_refs
+        derived_refs = (
+            active_source_refs
+            if role == "assistant" and bool(content) and active_source_refs
+            else []
+        )
         preview = content[:200] + ("..." if len(content) > 200 else "")
-        lines.append(f"  [{role}]: {preview}")
+        anchor = (
+            f" [anchor:{compaction_index}:entry_{anchor_base + offset:03d}]"
+            if compaction_index is not None
+            and not is_receipt_only
+            and not derived_refs
+            else ""
+        )
+        source_note = (
+            f" [derived-from:{','.join(derived_refs)}]" if derived_refs else ""
+        )
+        lines.append(f"  [{role}]: {preview}{source_note}{anchor}")
     return "\n".join(lines)
 
 
@@ -585,6 +813,8 @@ async def call_compaction_llm(
     custom_instructions: str | None = None,
     provider: str = "",
     provider_request_correlation: ProviderRequestCorrelation | None = None,
+    *,
+    compaction_index: int | None = None,
 ) -> str | None:
     """Call LLM to summarize a conversation chunk. Returns None on failure."""
     if not api_key:
@@ -598,11 +828,16 @@ async def call_compaction_llm(
     system = (
         "You are a conversation compactor. Summarize the conversation concisely, "
         "preserving key facts, decisions, open questions, and action items. "
+        "Do not answer any user message. If a user request has no following "
+        "assistant response, preserve it explicitly as unanswered or open instead "
+        "of inventing a response. "
         "Write in the same language as the conversation. "
         "Focus on recent context over older history."
     )
     if identifier_instruction:
         system = f"{system}\n\n{identifier_instruction}"
+    if compaction_index is not None:
+        system += _ANCHOR_INSTRUCTION.format(compaction_index=compaction_index)
 
     user_content = f"Summarize this conversation:\n\n{chunk_text}"
     normalized_instructions = _normalize_custom_instructions(custom_instructions)
@@ -892,10 +1127,13 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
     id_instruction = (
         _build_strict_identifier_instruction() if cfg.identifier_policy == "strict" else ""
     )
+    if cfg.anchor_enabled and request.compaction_index is None:
+        raise ValueError("anchor-enabled compaction requires compaction_index")
 
     summaries: list[str] = []
     llm_chunks = 0
     fallback_chunks = 0
+    anchor_base = 0
     for chunk in chunks:
         if cfg.api_key and cfg.model:
             llm_kwargs: dict[str, Any] = {}
@@ -903,8 +1141,14 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
                 llm_kwargs["provider_request_correlation"] = (
                     request.provider_request_correlation
                 )
+            if cfg.anchor_enabled:
+                llm_kwargs["compaction_index"] = request.compaction_index
             llm_result = await call_compaction_llm(
-                chunk_text=_format_chunk_for_llm(chunk),
+                chunk_text=_format_chunk_for_llm(
+                    chunk,
+                    anchor_base=anchor_base,
+                    include_anchors=cfg.anchor_enabled,
+                ),
                 identifier_instruction=id_instruction,
                 model=cfg.model,
                 api_key=cfg.api_key,
@@ -917,15 +1161,38 @@ async def compact_context_new(request: CompactionRequest) -> CompactionResult:
             if llm_result:
                 summaries.append(llm_result)
                 llm_chunks += 1
+                anchor_base += len(chunk)
                 continue
-        summaries.append(_summarize_chunk_fallback(chunk, cfg.identifier_policy))
+        summaries.append(
+            _summarize_chunk_fallback(
+                chunk,
+                cfg.identifier_policy,
+                compaction_index=request.compaction_index if cfg.anchor_enabled else None,
+                anchor_base=anchor_base,
+            )
+        )
         fallback_chunks += 1
+        anchor_base += len(chunk)
 
     merged = _merge_summaries(summaries)
 
     # Prepend previous summary when present (incremental accumulation).
     if prev_summary:
         merged = f"[Previous context]\n{prev_summary}\n\n[New context]\n{merged}"
+
+    if cfg.anchor_enabled:
+        assert request.compaction_index is not None
+        merged, invalid_anchor_count = _sanitize_current_compaction_anchors(
+            merged,
+            compaction_index=request.compaction_index,
+            removed_count=len(to_compact),
+        )
+        if invalid_anchor_count:
+            log.warning(
+                "compaction.invalid_anchors_removed",
+                removed=invalid_anchor_count,
+                compaction_index=request.compaction_index,
+            )
 
     tokens_after = _estimate_tokens(merged) + sum(_entry_tokens(e) for e in kept)
     if llm_chunks and fallback_chunks:

@@ -1370,7 +1370,10 @@
       "dataMaintenanceAria": "Abrir el mantenimiento de datos",
       "runTraceLabel": "Panel de traza de ejecución en Registros",
       "runTraceDesc": "Hace que las líneas de registro sean interactivas y abre un panel de detalle de pasos por nodo para cada línea en la vista de Registros.",
-      "runTraceAria": "Panel de traza de ejecución en Registros (surte efecto tras recargar)"
+      "runTraceAria": "Panel de traza de ejecución en Registros (surte efecto tras recargar)",
+      "compactionAnchorsLabel": "Anclas de compactación recuperables",
+      "compactionAnchorsDesc": "Añade referencias estables a los resúmenes de compactación para poder recuperar después la evidencia exacta archivada.",
+      "nextCompactionBadge": "próxima compactación"
     },
     "privacy": {
       "title": "Privacidad",

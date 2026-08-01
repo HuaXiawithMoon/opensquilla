@@ -14,7 +14,10 @@ from unittest.mock import AsyncMock
 import pytest
 import pytest_asyncio
 
-from opensquilla.session.compaction import CompactionConfig
+from opensquilla.session.compaction import (
+    CompactionConfig,
+    extract_anchors_from_summary,
+)
 from opensquilla.session.manager import SessionManager
 from opensquilla.session.models import (
     PlanRunRecord,
@@ -1300,6 +1303,61 @@ async def test_branch_fork_transcript_copies_compacted_archive(manager):
 
 
 @pytest.mark.asyncio
+async def test_anchor_enabled_compaction_and_full_fork_preserve_exact_identity(
+    manager,
+):
+    parent = await manager.create("agent:main:main")
+    for index in range(8):
+        await manager.append_message(
+            parent.session_key,
+            "user" if index % 2 == 0 else "assistant",
+            f"anchor message {index}",
+            token_count=100,
+        )
+
+    result = await manager.compact_with_result(
+        parent.session_key,
+        400,
+        CompactionConfig(anchor_enabled=True),
+    )
+
+    assert result.removed_count > 0
+    anchors = extract_anchors_from_summary(result.summary)
+    assert anchors
+    parent_summaries = await manager.get_summaries(parent.session_key)
+    assert (
+        extract_anchors_from_summary(parent_summaries[0].summary_text)
+        == anchors
+    )
+    anchor = anchors[0]
+    anchor_value = (
+        f"{anchor['compaction_index']}:{anchor['entry_anchor_id']}"
+    )
+    parent_match = await manager._storage.search_transcript(
+        session_id=parent.session_id,
+        anchor=anchor_value,
+    )
+    assert parent_match
+
+    child = await manager.branch(
+        parent.session_key,
+        "agent:main:direct:anchor-child",
+        fork_transcript=True,
+    )
+    child_summaries = await manager.get_summaries(child.session_key)
+    assert child_summaries[0].compaction_index == parent_summaries[0].compaction_index
+    assert (
+        extract_anchors_from_summary(child_summaries[0].summary_text)
+        == anchors
+    )
+    child_match = await manager._storage.search_transcript(
+        session_id=child.session_id,
+        anchor=anchor_value,
+    )
+    assert child_match[0]["snippet"] == parent_match[0]["snippet"]
+
+
+@pytest.mark.asyncio
 async def test_full_branch_preserves_incomplete_parent_compaction_evidence(manager):
     parent = await manager.create("agent:main:main")
     for index in range(4):
@@ -1693,6 +1751,37 @@ async def test_storage_adds_compaction_lookup_index_to_existing_database(tmp_pat
             "idx_compacted_transcript_session_compaction" in detail
             for detail in query_plan
         )
+    finally:
+        await upgraded.close()
+
+
+@pytest.mark.asyncio
+async def test_storage_migrates_compaction_anchor_columns_before_index(tmp_path):
+    db_path = tmp_path / "legacy-anchor.db"
+    initial = SessionStorage(str(db_path))
+    await initial.connect()
+    await initial.close()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("DROP INDEX idx_compacted_transcript_anchor_lookup")
+        conn.execute(
+            "ALTER TABLE compacted_transcript_entries "
+            "DROP COLUMN compaction_anchor_id"
+        )
+    upgraded = SessionStorage(str(db_path))
+    await upgraded.connect()
+    try:
+        async with upgraded.conn.execute(
+            "PRAGMA table_info(compacted_transcript_entries)"
+        ) as cur:
+            compacted_columns = {row[1] for row in await cur.fetchall()}
+        async with upgraded.conn.execute(
+            "PRAGMA index_list(compacted_transcript_entries)"
+        ) as cur:
+            indexes = {row[1] for row in await cur.fetchall()}
+
+        assert "compaction_anchor_id" in compacted_columns
+        assert "idx_compacted_transcript_anchor_lookup" in indexes
     finally:
         await upgraded.close()
 

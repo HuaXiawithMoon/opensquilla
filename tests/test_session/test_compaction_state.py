@@ -134,6 +134,37 @@ def test_extract_compaction_obligations_prioritizes_goals_when_bounded() -> None
     ]
 
 
+def test_session_search_receipt_is_not_a_new_compaction_obligation() -> None:
+    entries = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "type": "tool_use",
+                    "id": "call_search",
+                    "name": "session_search",
+                    "input": {"query": "prior decision"},
+                },
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "call_search",
+                    "name": "session_search",
+                    "retrieval_receipt": True,
+                    "result": (
+                        '{"refs":[{"anchor":"3:entry_007"}],'
+                        '"snippet":"BORROWED_DECISION_MUST_NOT_BECOME_AN_OBLIGATION"}'
+                    ),
+                },
+            ],
+        }
+    ]
+
+    obligations = extract_compaction_obligations(entries)
+
+    assert obligations == []
+
+
 def test_structured_summary_backfills_missing_obligations_without_blocking() -> None:
     obligations = extract_compaction_obligations(
         [

@@ -500,6 +500,8 @@ tool_result_store_retention_seconds = 604800
 
 [compaction]
 enabled = true
+# Experimental, default off. Adds recoverable references to future summaries.
+# anchor_enabled = false
 # model = ""            # None = use session model
 # timeout_seconds = 30.0
 

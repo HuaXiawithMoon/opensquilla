@@ -204,7 +204,7 @@ async def test_patch_safe_allows_memory_learning_toggles(tmp_path) -> None:
     """The Settings > Advanced group writes through config.patch.safe
     (operator.write): the three boolean opt-ins must be allowlisted, and the
     safe path must still run the dream linkage (it delegates to the full
-    patch handler)."""
+    patch handler). Compaction anchors are an independent experimental opt-in."""
 
     from opensquilla.gateway.rpc_config import (
         _SAFE_WRITE_PATCH_PATHS,
@@ -214,6 +214,7 @@ async def test_patch_safe_allows_memory_learning_toggles(tmp_path) -> None:
     assert "squilla_router.self_learning.enabled" in _SAFE_WRITE_PATCH_PATHS
     assert "memory.dream.enabled" in _SAFE_WRITE_PATCH_PATHS
     assert "memory.dream.auto_schedule" in _SAFE_WRITE_PATCH_PATHS
+    assert "compaction.anchor_enabled" in _SAFE_WRITE_PATCH_PATHS
     # Thresholds/schedules stay admin-only.
     assert "squilla_router.self_learning.train_min_samples" not in _SAFE_WRITE_PATCH_PATHS
 
@@ -227,6 +228,13 @@ async def test_patch_safe_allows_memory_learning_toggles(tmp_path) -> None:
         "memory.dream.auto_schedule",
         "memory.dream.enabled",
     ]
+
+    anchor_res = await _handle_config_patch_safe(
+        {"patches": {"compaction.anchor_enabled": True}},
+        ctx,
+    )
+    assert ctx.config.compaction.anchor_enabled is True
+    assert anchor_res.get("linked", []) == []
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -13,6 +13,11 @@ When session history approaches the configured context budget, OpenSquilla can
 compact older transcript entries into a durable summary and keep the recent
 tail active.
 
+Compaction input is divided on logical turn boundaries. A user request, its
+tool calls and results, and the following assistant response stay together;
+an unanswered request is recorded as open rather than answered by the
+summarizer.
+
 The goal is to preserve:
 
 - user goal;
@@ -23,8 +28,67 @@ The goal is to preserve:
 - important tool results;
 - next action.
 
-Compaction is not a guarantee that every old word remains model-visible. Export
-sessions or save files when exact historical text matters.
+Compaction is not a guarantee that every old word remains model-visible.
+Archived transcript rows remain searchable after compaction. An optional,
+experimental anchor mode can also attach stable references to selected summary
+claims so the agent can expand the exact archived source later.
+
+## Recoverable Compaction Anchors (Experimental)
+
+Enable the feature in Settings > Advanced or configure:
+
+```toml
+[compaction]
+anchor_enabled = true
+```
+
+The setting is off by default and applies to subsequent compactions. When it is
+enabled, summaries may contain references such as:
+
+```text
+[anchor:2:entry_017]
+```
+
+`session_search(anchor="2:entry_017")` resolves that reference inside the
+current session and returns the exact archived entry. Keyword
+`session_search(query="...")` remains the fallback when no suitable anchor is
+available, including for Chinese transcript text.
+
+Keyword search follows a web-search-like contract: natural-language phrases
+and space-separated terms are accepted, exact/all-term matches rank first, and
+the same call can relax an imperfect term instead of requiring repeated query
+rewrites. In an active agent turn the scope defaults to archived entries from
+the current session, so messages already present in live context are not echoed
+back. Explicitly specifying a session ID retains the broader transcript-search
+behavior. Results are bounded to five entries and 4,000 characters per call. A
+turn may use at most two keyword searches, four anchor expansions, six calls
+total, and 12,000 returned characters. Calls from the same session are executed
+serially, and reordered duplicate queries or repeated anchors are blocked for
+that turn. The aggregate character budget remains the final bound when
+different queries rank the same evidence.
+
+Retrieved snippets are a borrowed view of canonical transcript rows, not new
+session facts. Both live compaction input and durable tool history project a
+search result to a small receipt with source references instead of copying
+snippets. Compaction excludes receipt-only entries from continuity extraction.
+An answer based on a receipt reuses its source anchors for borrowed facts
+instead of minting anchors for restatements. This keeps recovery one hop at the
+storage boundary and prevents a search -> compaction -> search feedback loop
+from multiplying old text.
+
+Anchor lookup preserves three distinct outcomes:
+
+- `resolved`: the exact archived row exists and was recovered;
+- `declared_unavailable`: the summary declared the anchor, but its source row
+  is unavailable;
+- `unknown`: neither an exact archived row nor a declaration exists in the
+  session. This may indicate a generated or cross-session reference, but is not
+  by itself proof of hallucination.
+
+Compaction remains liveness-first. If a durable anchor identity cannot be
+established, compaction may continue without recoverable anchors rather than
+claiming a reference that cannot be expanded. Anchors are selective, so export
+sessions or save files when complete verbatim history is required.
 
 ## User-Visible Lifecycle
 
@@ -81,6 +145,12 @@ tries to keep:
 
 Cache continuity is best-effort. Routing, tools, attachments, provider changes,
 or a large new context can reduce cache reuse.
+
+`session_search` evidence is fully visible to the model during the retrieval
+turn, then replaced by a source-reference receipt in later turns. That
+intentional projection can invalidate the provider's volatile tail cache once
+after a search. Earlier stable prompt segments remain reusable, while the
+retrieved transcript text does not become permanent context growth.
 
 ## Related Commands and Surfaces
 

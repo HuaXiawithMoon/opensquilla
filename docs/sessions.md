@@ -123,8 +123,11 @@ opensquilla doctor
 ```
 
 If old context appears summarized, the session may have compacted older
-history. This is normal for long sessions under context pressure. Export the
-session when exact text matters.
+history. This is normal for long sessions under context pressure. Archived
+entries remain available to transcript search. If experimental recoverable
+compaction anchors were enabled before compaction, selected summary claims can
+also be expanded to their exact archived source. Export the session when a
+complete verbatim record matters.
 
 Read next:
 

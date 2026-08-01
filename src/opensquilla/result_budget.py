@@ -156,6 +156,16 @@ class ToolRunBudgetPolicy:
     max_web_search_fetch_top_k: int | None = 3
     max_web_search_chars_per_source: int | None = 1500
     max_repeated_retrievals_per_turn: int | None = 2
+    # Local transcript retrieval has a separate, tighter budget because every
+    # result is replayed through the model loop and the source already exists
+    # durably in the session archive.
+    max_session_search_calls_per_turn: int | None = 6
+    max_session_search_query_calls_per_turn: int | None = 2
+    max_session_search_anchor_calls_per_turn: int | None = 4
+    max_session_search_chars_per_turn: int | None = 12_000
+    max_session_search_chars_per_call: int | None = 4_000
+    max_session_search_results: int | None = 5
+    max_repeated_session_searches_per_turn: int | None = 1
 
 
 DEFAULT_TOOL_RUN_BUDGET_POLICY = ToolRunBudgetPolicy()
@@ -228,6 +238,10 @@ class ToolRunBudgetReservation:
     counted_as_fetch: bool = False
     counted_as_search: bool = False
     counted_as_external_text: bool = False
+    counted_as_session_search: bool = False
+    session_search_kind: str | None = None
+    reserved_session_search_chars: int = 0
+    session_search_key: str | None = None
     retrieval_key: RetrievalKey | None = None
     semantic_retrieval_key: WebRetrievalSemanticKey | None = None
 
@@ -242,6 +256,12 @@ class ToolRunBudgetTracker:
         self._web_fetch_calls_used = 0
         self._external_text_chars_used = 0
         self._external_text_chars_reserved = 0
+        self._session_search_calls_used = 0
+        self._session_search_query_calls_used = 0
+        self._session_search_anchor_calls_used = 0
+        self._session_search_chars_used = 0
+        self._session_search_chars_reserved = 0
+        self._session_search_keys_used: dict[str, int] = {}
         self._retrieval_keys_used: dict[RetrievalKey, int] = {}
         self._inflight_retrieval_keys: set[WebRetrievalSemanticKey] = set()
         self._terminal_retrieval_keys: dict[WebRetrievalSemanticKey, str] = {}
@@ -253,6 +273,54 @@ class ToolRunBudgetTracker:
         arguments: dict[str, Any],
     ) -> ToolRunBudgetReservation:
         args = dict(arguments)
+        if tool_name == "session_search":
+            async with self._lock:
+                kind = "anchor" if args.get("anchor") else "query"
+                self._check_call_budget(
+                    tool_name=tool_name,
+                    used=self._session_search_calls_used,
+                    limit=self.policy.max_session_search_calls_per_turn,
+                )
+                self._check_call_budget(
+                    tool_name=tool_name,
+                    used=(
+                        self._session_search_anchor_calls_used
+                        if kind == "anchor"
+                        else self._session_search_query_calls_used
+                    ),
+                    limit=(
+                        self.policy.max_session_search_anchor_calls_per_turn
+                        if kind == "anchor"
+                        else self.policy.max_session_search_query_calls_per_turn
+                    ),
+                )
+                session_search_key: str | None = None
+                reserved_chars = 0
+                try:
+                    session_search_key = self._reserve_session_search_key(args)
+                    reserved_chars = self._reserve_session_search_chars(args)
+                except Exception:
+                    self._release_session_search_key(session_search_key)
+                    if reserved_chars:
+                        self._session_search_chars_reserved = max(
+                            0,
+                            self._session_search_chars_reserved - reserved_chars,
+                        )
+                    raise
+                self._session_search_calls_used += 1
+                if kind == "anchor":
+                    self._session_search_anchor_calls_used += 1
+                else:
+                    self._session_search_query_calls_used += 1
+            return ToolRunBudgetReservation(
+                tool_name=tool_name,
+                arguments=args,
+                counted_as_session_search=True,
+                session_search_kind=kind,
+                reserved_session_search_chars=reserved_chars,
+                session_search_key=session_search_key,
+            )
+
         if tool_name in {"web_search", "web_discover"}:
             async with self._lock:
                 semantic_key = web_retrieval_semantic_key(args)
@@ -306,6 +374,12 @@ class ToolRunBudgetTracker:
         reservation: ToolRunBudgetReservation,
         content: Any,
     ) -> None:
+        if reservation.counted_as_session_search:
+            text = content if isinstance(content, str) else str(content)
+            async with self._lock:
+                self._release_session_search_reservation(reservation)
+                self._session_search_chars_used += len(text)
+            return
         if not reservation.counted_as_external_text:
             return
         text = content if isinstance(content, str) else str(content)
@@ -324,9 +398,24 @@ class ToolRunBudgetTracker:
             not reservation.counted_as_fetch
             and not reservation.counted_as_search
             and not reservation.counted_as_external_text
+            and not reservation.counted_as_session_search
         ):
             return
         async with self._lock:
+            if reservation.counted_as_session_search:
+                self._release_session_search_reservation(reservation)
+                self._session_search_calls_used = max(
+                    0, self._session_search_calls_used - 1
+                )
+                if reservation.session_search_kind == "anchor":
+                    self._session_search_anchor_calls_used = max(
+                        0, self._session_search_anchor_calls_used - 1
+                    )
+                else:
+                    self._session_search_query_calls_used = max(
+                        0, self._session_search_query_calls_used - 1
+                    )
+                self._release_session_search_key(reservation.session_search_key)
             self._release_external_reservation(reservation)
             if reservation.semantic_retrieval_key is not None:
                 self._inflight_retrieval_keys.discard(
@@ -348,6 +437,17 @@ class ToolRunBudgetTracker:
                 "web_fetch_calls_used": self._web_fetch_calls_used,
                 "external_text_chars_used": self._external_text_chars_used,
                 "external_text_chars_reserved": self._external_text_chars_reserved,
+                "session_search_calls_used": self._session_search_calls_used,
+                "session_search_query_calls_used": (
+                    self._session_search_query_calls_used
+                ),
+                "session_search_anchor_calls_used": (
+                    self._session_search_anchor_calls_used
+                ),
+                "session_search_chars_used": self._session_search_chars_used,
+                "session_search_chars_reserved": (
+                    self._session_search_chars_reserved
+                ),
                 "retrieval_loop_guard": [
                     {
                         "tool_name": tool_name,
@@ -397,6 +497,85 @@ class ToolRunBudgetTracker:
                 arguments["max_chars"] = cap
         self._external_text_chars_reserved += cap
         return cap
+
+    def _reserve_session_search_chars(self, arguments: dict[str, Any]) -> int:
+        total = self.policy.max_session_search_chars_per_turn
+        remaining = (
+            None
+            if total is None
+            else total
+            - self._session_search_chars_used
+            - self._session_search_chars_reserved
+        )
+        if remaining is not None and remaining <= 0:
+            raise ToolRunBudgetExceededError(
+                "session_search",
+                f"Tool 'session_search' exceeded its turn result budget ({total} chars).",
+            )
+        cap = self.policy.max_session_search_chars_per_call
+        if remaining is not None:
+            cap = remaining if cap is None else min(cap, remaining)
+        requested = arguments.get("max_chars")
+        if _is_plain_int(requested):
+            cap = requested if cap is None else min(requested, cap)
+        if cap is None:
+            return 0
+        cap = int(cap)
+        if cap < 1000:
+            raise ToolRunBudgetExceededError(
+                "session_search",
+                "session_search cannot enforce the remaining turn result budget "
+                "below 1000 characters.",
+            )
+        arguments["max_chars"] = cap
+        self._session_search_chars_reserved += cap
+        return cap
+
+    def _release_session_search_reservation(
+        self, reservation: ToolRunBudgetReservation
+    ) -> None:
+        if reservation.reserved_session_search_chars:
+            self._session_search_chars_reserved = max(
+                0,
+                self._session_search_chars_reserved
+                - reservation.reserved_session_search_chars,
+            )
+
+    def _reserve_session_search_key(self, arguments: dict[str, Any]) -> str | None:
+        limit = self.policy.max_repeated_session_searches_per_turn
+        if limit is None:
+            return None
+        anchor = str(arguments.get("anchor") or "").strip()
+        if anchor:
+            key = f"anchor:{anchor}"
+        else:
+            terms = sorted(
+                {
+                    term
+                    for term in canonicalize_query_key(
+                        str(arguments.get("query") or "")
+                    ).split()
+                    if term
+                }
+            )
+            key = "query:" + " ".join(terms)
+        used = self._session_search_keys_used.get(key, 0)
+        if used >= limit:
+            raise ToolRunBudgetExceededError(
+                "session_search",
+                "Tool 'session_search' blocked a repeated query or anchor in this turn.",
+            )
+        self._session_search_keys_used[key] = used + 1
+        return key
+
+    def _release_session_search_key(self, key: str | None) -> None:
+        if key is None:
+            return
+        used = self._session_search_keys_used.get(key, 0)
+        if used <= 1:
+            self._session_search_keys_used.pop(key, None)
+        else:
+            self._session_search_keys_used[key] = used - 1
 
     def _external_text_remaining(self) -> int | None:
         total = self.policy.max_external_text_chars_per_turn
@@ -818,6 +997,26 @@ def clamp_tool_arguments(
             )
         elif requested_chars is None and chars_cap is not None:
             next_args["max_chars_per_source"] = chars_cap
+    elif tool_name == "session_search":
+        requested_limit = next_args.get("limit")
+        results_cap = policy.max_session_search_results
+        if _is_plain_int(requested_limit):
+            value = max(1, requested_limit)
+            next_args["limit"] = (
+                min(value, results_cap) if results_cap is not None else value
+            )
+        elif results_cap is not None:
+            next_args["limit"] = results_cap
+
+        requested_chars = next_args.get("max_chars")
+        chars_cap = policy.max_session_search_chars_per_call
+        if _is_plain_int(requested_chars):
+            value = max(1000, requested_chars)
+            next_args["max_chars"] = (
+                min(value, chars_cap) if chars_cap is not None else value
+            )
+        elif chars_cap is not None:
+            next_args["max_chars"] = chars_cap
     return next_args
 
 
